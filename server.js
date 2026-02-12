@@ -9,17 +9,6 @@ app.use(express.static("public"));
 let STORES = [];
 
 /** =========================
- *  CACHE DE ITENS (ANÚNCIOS)
- *  ========================= */
-const ITEM_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 horas
-const itemCache = new Map(); // item_id -> { data, expiresAt }
-
-function forceHttps(url) {
-  if (!url) return "";
-  return url.startsWith("http://") ? url.replace("http://", "https://") : url;
-}
-
-/** =========================
  *  REFRESH TOKEN
  *  ========================= */
 async function refreshAccessToken(store) {
@@ -34,49 +23,6 @@ async function refreshAccessToken(store) {
   if (resp.data.refresh_token) store.refresh_token = resp.data.refresh_token;
 }
 
-/**
- * Busca dados do anúncio com token (porque acesso público pode dar 403 PolicyAgent)
- */
-async function getItemInfo(store, itemId) {
-  if (!itemId) return null;
-
-  const cached = itemCache.get(itemId);
-  if (cached && cached.expiresAt > Date.now()) return cached.data;
-
-  const doFetch = () =>
-    axios.get(`https://api.mercadolibre.com/items/${itemId}`, {
-      headers: { Authorization: `Bearer ${store.access_token}` }
-    });
-
-  let resp;
-
-  try {
-    resp = await doFetch();
-  } catch (err) {
-    // token expirado → renova e tenta de novo
-    if (err.response?.status === 401) {
-      await refreshAccessToken(store);
-      resp = await doFetch();
-    } else {
-      throw err;
-    }
-  }
-
-  const title = resp.data?.title || "";
-  const thumbnail = forceHttps(
-    resp.data?.secure_thumbnail ||
-    resp.data?.thumbnail ||
-    resp.data?.pictures?.[0]?.secure_url ||
-    resp.data?.pictures?.[0]?.url ||
-    ""
-  );
-
-  const data = { item_id: itemId, title, thumbnail };
-
-  itemCache.set(itemId, { data, expiresAt: Date.now() + ITEM_CACHE_TTL_MS });
-  return data;
-}
-
 /** =========================
  *  HELPERS
  *  ========================= */
@@ -89,7 +35,7 @@ async function fetchQuestionsForStore(store) {
   const cutoff = cutoffTimestamp(MAX_DAYS);
 
   const resp = await axios.get(
-    `https://api.mercadolibre.com/questions/search?seller_id=${store.user_id}&status=UNANSWERED`,
+    `https://api.mercadolibre.com/questions/search?seller_id=${store.user_id}&status=UNANSWERED&api_version=4`,
     { headers: { Authorization: `Bearer ${store.access_token}` } }
   );
 
@@ -99,32 +45,12 @@ async function fetchQuestionsForStore(store) {
     const dt = new Date(q.date_created).getTime();
     if (isNaN(dt) || dt < cutoff) continue;
 
-    let item_title = "";
-    let item_thumbnail = "";
-    let item_error = "";
-
-    if (q.item_id) {
-      try {
-        const item = await getItemInfo(store, q.item_id);
-        item_title = item?.title || "";
-        item_thumbnail = item?.thumbnail || "";
-      } catch (e) {
-        // debug (não quebra o painel)
-        item_error = e.response?.data
-          ? JSON.stringify(e.response.data)
-          : (e.message || "erro ao buscar item");
-      }
-    } else {
-      item_error = "pergunta sem item_id";
-    }
-
     enriched.push({
       ...q,
       store_id: store.user_id,
       store_name: store.store_name,
-      item_title,
-      item_thumbnail,
-      item_error
+      item_title: q.item?.title || "",
+      item_thumbnail: q.item?.thumbnail || ""
     });
   }
 
@@ -199,14 +125,13 @@ app.get("/questions", async (req, res) => {
       allQuestions = allQuestions.concat(qs);
 
     } catch (error) {
-      // Se token expirou, tenta renovar e buscar 1x
       if (error.response?.status === 401) {
         try {
           await refreshAccessToken(store);
           const qs = await fetchQuestionsForStore(store);
           allQuestions = allQuestions.concat(qs);
         } catch (e2) {
-          console.log("Erro ao renovar token (questions):", e2.response?.data || e2.message);
+          console.log("Erro ao renovar token:", e2.response?.data || e2.message);
         }
       } else {
         console.log("Erro ao buscar perguntas:", error.response?.data || error.message);
@@ -243,7 +168,7 @@ app.post("/reply", async (req, res) => {
       } catch (e2) {
         return res.status(400).json({
           success: false,
-          error: "Falha ao responder (mesmo após renovar token)",
+          error: "Falha ao responder após renovar token",
           details: e2.response?.data || e2.message
         });
       }
