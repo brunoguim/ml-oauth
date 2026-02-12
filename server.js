@@ -30,29 +30,127 @@ function cutoffTimestamp(days) {
   return Date.now() - days * 24 * 60 * 60 * 1000;
 }
 
+function forceHttps(url) {
+  if (!url) return "";
+  return url.startsWith("http://") ? url.replace("http://", "https://") : url;
+}
+
+function chunk(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+/**
+ * Busca itens em lote: /items?ids=ID1,ID2,ID3...
+ * Retorna um mapa: itemId -> {title, thumbnail}
+ */
+async function fetchItemsBulk(store, itemIds) {
+  const resultMap = new Map();
+  if (!itemIds || itemIds.length === 0) return resultMap;
+
+  // remove duplicados
+  const unique = Array.from(new Set(itemIds));
+
+  // o ML costuma aceitar listas, mas vamos ser conservadores
+  const batches = chunk(unique, 20);
+
+  const doCall = async (idsBatch) => {
+    const url = `https://api.mercadolibre.com/items?ids=${idsBatch.join(",")}`;
+    return axios.get(url, {
+      headers: { Authorization: `Bearer ${store.access_token}` }
+    });
+  };
+
+  for (const idsBatch of batches) {
+    let resp;
+    try {
+      resp = await doCall(idsBatch);
+    } catch (err) {
+      if (err.response?.status === 401) {
+        // token expirou -> renova e tenta de novo
+        await refreshAccessToken(store);
+        resp = await doCall(idsBatch);
+      } else {
+        // se der erro em um batch, seguimos com os demais
+        continue;
+      }
+    }
+
+    const arr = resp.data || [];
+    for (const entry of arr) {
+      const code = entry?.code; // 200 / 404 / etc
+      const body = entry?.body;
+      const id = body?.id || entry?.id; // em geral vem no body.id
+
+      if (code === 200 && body && id) {
+        const title = body.title || "";
+        const thumbnail = forceHttps(
+          body.secure_thumbnail ||
+          body.thumbnail ||
+          body.pictures?.[0]?.secure_url ||
+          body.pictures?.[0]?.url ||
+          ""
+        );
+
+        resultMap.set(id, { title, thumbnail });
+      }
+    }
+  }
+
+  return resultMap;
+}
+
+/**
+ * Busca perguntas e depois enriquece com title/thumbnail via bulk items.
+ */
 async function fetchQuestionsForStore(store) {
   const MAX_DAYS = 90;
   const cutoff = cutoffTimestamp(MAX_DAYS);
 
-  const resp = await axios.get(
-    `https://api.mercadolibre.com/questions/search?seller_id=${store.user_id}&status=UNANSWERED&api_version=4`,
-    { headers: { Authorization: `Bearer ${store.access_token}` } }
-  );
+  const doQuestionsCall = () =>
+    axios.get(
+      `https://api.mercadolibre.com/questions/search?seller_id=${store.user_id}&status=UNANSWERED`,
+      { headers: { Authorization: `Bearer ${store.access_token}` } }
+    );
 
-  const enriched = [];
+  let qResp;
+  try {
+    qResp = await doQuestionsCall();
+  } catch (err) {
+    if (err.response?.status === 401) {
+      await refreshAccessToken(store);
+      qResp = await doQuestionsCall();
+    } else {
+      throw err;
+    }
+  }
 
-  for (const q of (resp.data.questions || [])) {
-    const dt = new Date(q.date_created).getTime();
-    if (isNaN(dt) || dt < cutoff) continue;
+  const questionsRaw = (qResp.data.questions || [])
+    .filter(q => {
+      const dt = new Date(q.date_created).getTime();
+      return !isNaN(dt) && dt >= cutoff;
+    });
 
-    enriched.push({
+  // coletar item_ids
+  const itemIds = questionsRaw
+    .map(q => q.item_id)
+    .filter(Boolean);
+
+  // buscar itens em lote
+  const itemsMap = await fetchItemsBulk(store, itemIds);
+
+  // montar retorno final
+  const enriched = questionsRaw.map(q => {
+    const item = itemsMap.get(q.item_id) || null;
+    return {
       ...q,
       store_id: store.user_id,
       store_name: store.store_name,
-      item_title: q.item?.title || "",
-      item_thumbnail: q.item?.thumbnail || ""
-    });
-  }
+      item_title: item?.title || "",
+      item_thumbnail: item?.thumbnail || ""
+    };
+  });
 
   return enriched;
 }
@@ -109,7 +207,6 @@ app.get("/auth/callback", async (req, res) => {
       <br><br>
       <a href="/panel.html">Ir para o painel</a>
     `);
-
   } catch (error) {
     console.log(error.response?.data || error.message);
     res.send("Erro ao autenticar.");
@@ -123,19 +220,8 @@ app.get("/questions", async (req, res) => {
     try {
       const qs = await fetchQuestionsForStore(store);
       allQuestions = allQuestions.concat(qs);
-
     } catch (error) {
-      if (error.response?.status === 401) {
-        try {
-          await refreshAccessToken(store);
-          const qs = await fetchQuestionsForStore(store);
-          allQuestions = allQuestions.concat(qs);
-        } catch (e2) {
-          console.log("Erro ao renovar token:", e2.response?.data || e2.message);
-        }
-      } else {
-        console.log("Erro ao buscar perguntas:", error.response?.data || error.message);
-      }
+      console.log("Erro ao buscar perguntas/enriquecer:", error.response?.data || error.message);
     }
   }
 
@@ -158,7 +244,6 @@ app.post("/reply", async (req, res) => {
   try {
     await sendAnswer();
     return res.json({ success: true });
-
   } catch (error) {
     if (error.response?.status === 401) {
       try {
