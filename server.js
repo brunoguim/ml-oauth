@@ -9,7 +9,7 @@ app.use(express.static("public"));
 let STORES = [];
 
 /** =========================
- *  CACHE DE ITENS
+ *  CACHE DE ITENS (ANÚNCIOS)
  *  ========================= */
 const ITEM_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 horas
 const itemCache = new Map(); // item_id -> { data, expiresAt }
@@ -17,31 +17,6 @@ const itemCache = new Map(); // item_id -> { data, expiresAt }
 function forceHttps(url) {
   if (!url) return "";
   return url.startsWith("http://") ? url.replace("http://", "https://") : url;
-}
-
-async function getItemInfo(itemId) {
-  if (!itemId) return null;
-
-  const cached = itemCache.get(itemId);
-  if (cached && cached.expiresAt > Date.now()) return cached.data;
-
-  // Busca pública do item
-  const resp = await axios.get(`https://api.mercadolibre.com/items/${itemId}`);
-
-  const title = resp.data?.title || "";
-
-  const thumbnail = forceHttps(
-    resp.data?.secure_thumbnail ||
-    resp.data?.thumbnail ||
-    resp.data?.pictures?.[0]?.secure_url ||
-    resp.data?.pictures?.[0]?.url ||
-    ""
-  );
-
-  const data = { item_id: itemId, title, thumbnail };
-
-  itemCache.set(itemId, { data, expiresAt: Date.now() + ITEM_CACHE_TTL_MS });
-  return data;
 }
 
 /** =========================
@@ -57,6 +32,49 @@ async function refreshAccessToken(store) {
 
   store.access_token = resp.data.access_token;
   if (resp.data.refresh_token) store.refresh_token = resp.data.refresh_token;
+}
+
+/**
+ * Busca dados do anúncio com token (porque acesso público pode dar 403 PolicyAgent)
+ */
+async function getItemInfo(store, itemId) {
+  if (!itemId) return null;
+
+  const cached = itemCache.get(itemId);
+  if (cached && cached.expiresAt > Date.now()) return cached.data;
+
+  const doFetch = () =>
+    axios.get(`https://api.mercadolibre.com/items/${itemId}`, {
+      headers: { Authorization: `Bearer ${store.access_token}` }
+    });
+
+  let resp;
+
+  try {
+    resp = await doFetch();
+  } catch (err) {
+    // token expirado → renova e tenta de novo
+    if (err.response?.status === 401) {
+      await refreshAccessToken(store);
+      resp = await doFetch();
+    } else {
+      throw err;
+    }
+  }
+
+  const title = resp.data?.title || "";
+  const thumbnail = forceHttps(
+    resp.data?.secure_thumbnail ||
+    resp.data?.thumbnail ||
+    resp.data?.pictures?.[0]?.secure_url ||
+    resp.data?.pictures?.[0]?.url ||
+    ""
+  );
+
+  const data = { item_id: itemId, title, thumbnail };
+
+  itemCache.set(itemId, { data, expiresAt: Date.now() + ITEM_CACHE_TTL_MS });
+  return data;
 }
 
 /** =========================
@@ -87,11 +105,11 @@ async function fetchQuestionsForStore(store) {
 
     if (q.item_id) {
       try {
-        const item = await getItemInfo(q.item_id);
+        const item = await getItemInfo(store, q.item_id);
         item_title = item?.title || "";
         item_thumbnail = item?.thumbnail || "";
       } catch (e) {
-        // devolve erro pra debug
+        // debug (não quebra o painel)
         item_error = e.response?.data
           ? JSON.stringify(e.response.data)
           : (e.message || "erro ao buscar item");
@@ -106,7 +124,7 @@ async function fetchQuestionsForStore(store) {
       store_name: store.store_name,
       item_title,
       item_thumbnail,
-      item_error // debug
+      item_error
     });
   }
 
@@ -181,6 +199,7 @@ app.get("/questions", async (req, res) => {
       allQuestions = allQuestions.concat(qs);
 
     } catch (error) {
+      // Se token expirou, tenta renovar e buscar 1x
       if (error.response?.status === 401) {
         try {
           await refreshAccessToken(store);
