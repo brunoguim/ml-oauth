@@ -9,39 +9,36 @@ app.use(express.static("public"));
 let STORES = [];
 
 /** =========================
- *  CACHE DE ITENS (ANÚNCIOS)
+ *  CACHE DE ITENS
  *  ========================= */
 const ITEM_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 horas
 const itemCache = new Map(); // item_id -> { data, expiresAt }
 
-/**
- * Busca dados do anúncio (título e foto) de forma pública (sem token),
- * o que é mais estável para exibir no painel.
- */
-async function getItemInfo(store, itemId) {
+function forceHttps(url) {
+  if (!url) return "";
+  return url.startsWith("http://") ? url.replace("http://", "https://") : url;
+}
+
+async function getItemInfo(itemId) {
   if (!itemId) return null;
 
   const cached = itemCache.get(itemId);
   if (cached && cached.expiresAt > Date.now()) return cached.data;
 
-  // Busca pública do item (sem Authorization)
+  // Busca pública do item
   const resp = await axios.get(`https://api.mercadolibre.com/items/${itemId}`);
 
   const title = resp.data?.title || "";
 
-  // thumbnail pode variar; tentamos várias opções
-  const thumbnail =
+  const thumbnail = forceHttps(
     resp.data?.secure_thumbnail ||
     resp.data?.thumbnail ||
     resp.data?.pictures?.[0]?.secure_url ||
     resp.data?.pictures?.[0]?.url ||
-    "";
+    ""
+  );
 
-  const data = {
-    item_id: itemId,
-    title,
-    thumbnail
-  };
+  const data = { item_id: itemId, title, thumbnail };
 
   itemCache.set(itemId, { data, expiresAt: Date.now() + ITEM_CACHE_TTL_MS });
   return data;
@@ -59,11 +56,7 @@ async function refreshAccessToken(store) {
   });
 
   store.access_token = resp.data.access_token;
-
-  // Às vezes o ML devolve refresh_token novo
-  if (resp.data.refresh_token) {
-    store.refresh_token = resp.data.refresh_token;
-  }
+  if (resp.data.refresh_token) store.refresh_token = resp.data.refresh_token;
 }
 
 /** =========================
@@ -88,20 +81,32 @@ async function fetchQuestionsForStore(store) {
     const dt = new Date(q.date_created).getTime();
     if (isNaN(dt) || dt < cutoff) continue;
 
-    let item = null;
-    try {
-      item = await getItemInfo(store, q.item_id);
-    } catch (e) {
-      // se falhar buscar item, não impede a pergunta aparecer
-      item = null;
+    let item_title = "";
+    let item_thumbnail = "";
+    let item_error = "";
+
+    if (q.item_id) {
+      try {
+        const item = await getItemInfo(q.item_id);
+        item_title = item?.title || "";
+        item_thumbnail = item?.thumbnail || "";
+      } catch (e) {
+        // devolve erro pra debug
+        item_error = e.response?.data
+          ? JSON.stringify(e.response.data)
+          : (e.message || "erro ao buscar item");
+      }
+    } else {
+      item_error = "pergunta sem item_id";
     }
 
     enriched.push({
       ...q,
       store_id: store.user_id,
       store_name: store.store_name,
-      item_title: item?.title || "",
-      item_thumbnail: item?.thumbnail || ""
+      item_title,
+      item_thumbnail,
+      item_error // debug
     });
   }
 
@@ -144,7 +149,6 @@ app.get("/auth/callback", async (req, res) => {
     const user_id = user.data.id;
     const store_name = user.data.nickname || ("Loja " + user_id);
 
-    // Evita duplicar se autenticar de novo
     const existing = STORES.find(s => String(s.user_id) === String(user_id));
     if (existing) {
       existing.access_token = access_token;
@@ -177,7 +181,6 @@ app.get("/questions", async (req, res) => {
       allQuestions = allQuestions.concat(qs);
 
     } catch (error) {
-      // Se token expirou, tenta renovar e buscar 1x
       if (error.response?.status === 401) {
         try {
           await refreshAccessToken(store);
@@ -199,9 +202,7 @@ app.post("/reply", async (req, res) => {
   const { question_id, text, store_id } = req.body;
 
   const store = STORES.find(s => String(s.user_id) === String(store_id));
-  if (!store) {
-    return res.status(400).json({ success: false, error: "Loja não encontrada" });
-  }
+  if (!store) return res.status(400).json({ success: false, error: "Loja não encontrada" });
 
   const sendAnswer = () =>
     axios.post(
@@ -215,7 +216,6 @@ app.post("/reply", async (req, res) => {
     return res.json({ success: true });
 
   } catch (error) {
-    // Se token expirou, tenta renovar e reenviar 1x
     if (error.response?.status === 401) {
       try {
         await refreshAccessToken(store);
