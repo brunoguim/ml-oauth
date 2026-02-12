@@ -88,17 +88,27 @@ async function loadQuestions() {
     return;
   }
 
+function formatDateBR(iso) {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  return d.toLocaleString("pt-BR");
+}
+
+  
   questions.forEach(q => {
     const div = document.createElement("div");
     div.className = "card";
 
     div.innerHTML = `
       <div class="store-name">
-        Loja: <strong>${q.store_name}</strong>
-      </div>
-      <div class="question">
-        ${q.text}
-      </div>
+  Loja: <strong>${q.store_name}</strong>
+  <span style="float:right;color:#888;font-size:12px;">
+    ${formatDateBR(q.date_created)}
+  </span>
+</div>
+<div class="question">
+  ${q.text}
+</div>
       <textarea placeholder="Digite sua resposta"></textarea>
       <button onclick="reply(${q.id}, ${q.store_id}, this)">
         Responder
