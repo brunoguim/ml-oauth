@@ -6,11 +6,7 @@ const app = express();
 app.use(express.json());
 app.use(express.static("public"));
 
-let STORE = {
-  user_id: null,
-  access_token: null,
-  refresh_token: null
-};
+let STORES = [];
 
 app.get("/", (req, res) => {
   res.send(`
@@ -18,6 +14,8 @@ app.get("/", (req, res) => {
     <a href="https://auth.mercadolivre.com.br/authorization?response_type=code&client_id=${process.env.CLIENT_ID}&redirect_uri=${process.env.REDIRECT_URI}">
       Conectar Mercado Livre
     </a>
+    <br><br>
+    <a href="/panel.html">Ir para o painel</a>
   `);
 });
 
@@ -33,19 +31,22 @@ app.get("/auth/callback", async (req, res) => {
       redirect_uri: process.env.REDIRECT_URI
     });
 
-    STORE.access_token = response.data.access_token;
-    STORE.refresh_token = response.data.refresh_token;
+    const access_token = response.data.access_token;
+    const refresh_token = response.data.refresh_token;
 
     const user = await axios.get("https://api.mercadolibre.com/users/me", {
-      headers: {
-        Authorization: `Bearer ${STORE.access_token}`
-      }
+      headers: { Authorization: `Bearer ${access_token}` }
     });
 
-    STORE.user_id = user.data.id;
+    const user_id = user.data.id;
+
+    STORES.push({ user_id, access_token, refresh_token });
 
     res.send(`
       <h3>Loja conectada com sucesso!</h3>
+      <p>Total de lojas conectadas: ${STORES.length}</p>
+      <a href="/">Conectar outra loja</a>
+      <br><br>
       <a href="/panel.html">Ir para o painel</a>
     `);
 
@@ -56,37 +57,50 @@ app.get("/auth/callback", async (req, res) => {
 });
 
 app.get("/questions", async (req, res) => {
-  try {
-    const response = await axios.get(
-      `https://api.mercadolibre.com/questions/search?seller_id=${STORE.user_id}&status=UNANSWERED`,
-      {
-        headers: {
-          Authorization: `Bearer ${STORE.access_token}`
+  let allQuestions = [];
+
+  for (const store of STORES) {
+    try {
+      const response = await axios.get(
+        `https://api.mercadolibre.com/questions/search?seller_id=${store.user_id}&status=UNANSWERED`,
+        {
+          headers: {
+            Authorization: `Bearer ${store.access_token}`
+          }
         }
-      }
-    );
+      );
 
-    res.json(response.data.questions);
+      const questions = response.data.questions.map(q => ({
+        ...q,
+        store_id: store.user_id
+      }));
 
-  } catch (error) {
-    console.log(error.response?.data || error.message);
-    res.json({ error: "Erro ao buscar perguntas" });
+      allQuestions = allQuestions.concat(questions);
+
+    } catch (error) {
+      console.log("Erro ao buscar perguntas:", error.message);
+    }
   }
+
+  res.json(allQuestions);
 });
 
 app.post("/reply", async (req, res) => {
-  const { question_id, text } = req.body;
+  const { question_id, text, store_id } = req.body;
+
+  const store = STORES.find(s => s.user_id == store_id);
+
+  if (!store) {
+    return res.json({ error: "Loja não encontrada" });
+  }
 
   try {
     await axios.post(
       "https://api.mercadolibre.com/answers",
-      {
-        question_id,
-        text
-      },
+      { question_id, text },
       {
         headers: {
-          Authorization: `Bearer ${STORE.access_token}`
+          Authorization: `Bearer ${store.access_token}`
         }
       }
     );
