@@ -13,21 +13,7 @@
       margin: 14px 0;
       border-radius: 12px;
       box-shadow: 0 2px 6px rgba(0,0,0,0.10);
-      display: flex;
-      gap: 12px;
-      align-items: flex-start;
     }
-
-    .thumb {
-      width: 72px; height: 72px;
-      border-radius: 10px;
-      object-fit: cover;
-      border: 1px solid #eee;
-      background: #fafafa;
-      flex: 0 0 72px;
-    }
-
-    .content { flex: 1; min-width: 0; }
 
     .topline {
       font-size: 13px;
@@ -38,31 +24,9 @@
       margin-bottom: 6px;
     }
 
-    .store { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 65%; }
-    .date { color: #888; white-space: nowrap; font-size: 12px; }
-
-    .meta {
-      font-size: 12px;
-      color: #777;
-      margin-bottom: 6px;
-    }
-
-    .title {
-      font-size: 14px;
-      font-weight: bold;
-      color: #222;
-      margin-bottom: 8px;
-      line-height: 1.25;
-    }
-
-    .question {
-      font-size: 15px;
-      color: #111;
-      margin-bottom: 10px;
-      background: #f7f7f7;
-      padding: 10px;
-      border-radius: 10px;
-    }
+    .meta { font-size: 12px; color: #777; margin-bottom: 8px; }
+    .title { font-size: 14px; font-weight: bold; color: #222; margin-bottom: 8px; }
+    .question { font-size: 15px; margin-bottom: 10px; background: #f7f7f7; padding: 10px; border-radius: 10px; }
 
     textarea {
       width: 100%;
@@ -74,7 +38,7 @@
       box-sizing: border-box;
     }
 
-    .actions { display: flex; gap: 10px; margin-top: 8px; justify-content: flex-end; }
+    .actions { display: flex; justify-content: flex-end; margin-top: 8px; }
 
     button {
       background: #00a650;
@@ -85,8 +49,23 @@
       cursor: pointer;
       font-weight: bold;
     }
+
     button:hover { background: #008f45; }
 
+    .warn { font-size: 12px; color: #aa0000; margin-top: 6px; display:none; }
+    .debug {
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 10px;
+      background: #fff4f4;
+      border: 1px solid #ffd2d2;
+      color: #8a0000;
+      font-size: 12px;
+      white-space: pre-wrap;
+      display: none;
+    }
+
+    .link { color:#1a73e8; text-decoration:none; }
     .empty {
       text-align: center;
       color: #777;
@@ -96,9 +75,6 @@
       border-radius: 12px;
       box-shadow: 0 2px 6px rgba(0,0,0,0.08);
     }
-
-    .warn { font-size: 12px; color: #aa0000; margin-top: 6px; display:none; }
-    .link { color:#1a73e8; text-decoration:none; }
   </style>
 </head>
 <body>
@@ -117,12 +93,6 @@ function formatDateBR(iso) {
 
 function safeText(t) {
   return (t || "").toString();
-}
-
-// ajuda: força https se vier http
-function normalizeThumb(url) {
-  if (!url) return "";
-  return url.startsWith("http://") ? url.replace("http://", "https://") : url;
 }
 
 async function loadQuestions() {
@@ -147,37 +117,38 @@ async function loadQuestions() {
     const div = document.createElement("div");
     div.className = "card";
 
-    const thumb = normalizeThumb(q.item_thumbnail || "");
-    const title = q.item_title ? q.item_title : "(Título não disponível)";
     const itemId = q.item_id ? q.item_id : "(sem item_id)";
-
-    // link de teste (abre o JSON do item no navegador)
     const itemLink = q.item_id ? `https://api.mercadolibre.com/items/${q.item_id}` : "";
+    const title = q.item_title ? q.item_title : "(Título não disponível)";
+    const showDebug = (!q.item_title || !q.item_thumbnail) && q.item_error;
 
     div.innerHTML = `
-      <img class="thumb" src="${thumb}" onerror="this.style.display='none';" />
-      <div class="content">
-        <div class="topline">
-          <div class="store">Loja: <strong>${safeText(q.store_name)}</strong></div>
-          <div class="date">${formatDateBR(q.date_created)}</div>
-        </div>
+      <div class="topline">
+        <div>Loja: <strong>${safeText(q.store_name)}</strong></div>
+        <div>${formatDateBR(q.date_created)}</div>
+      </div>
 
-        <div class="meta">
-          Item ID: <strong>${safeText(itemId)}</strong>
-          ${itemLink ? `&nbsp;|&nbsp;<a class="link" href="${itemLink}" target="_blank">ver item</a>` : ""}
-        </div>
+      <div class="meta">
+        Item ID: <strong>${safeText(itemId)}</strong>
+        ${itemLink ? `&nbsp;|&nbsp;<a class="link" href="${itemLink}" target="_blank">ver item</a>` : ""}
+      </div>
 
-        <div class="title">${safeText(title)}</div>
+      <div class="title">${safeText(title)}</div>
 
-        <div class="question">
-          <strong>Pergunta:</strong> ${safeText(q.text)}
-        </div>
+      <div class="question">
+        <strong>Pergunta:</strong> ${safeText(q.text)}
+      </div>
 
-        <textarea placeholder="Digite sua resposta"></textarea>
-        <div class="actions">
-          <button onclick="reply(${q.id}, ${q.store_id}, this)">Responder</button>
-        </div>
-        <div class="warn"></div>
+      <textarea placeholder="Digite sua resposta"></textarea>
+
+      <div class="actions">
+        <button onclick="reply(${q.id}, ${q.store_id}, this)">Responder</button>
+      </div>
+
+      <div class="warn"></div>
+      <div class="debug" style="${showDebug ? "display:block" : "display:none"}">
+Erro ao buscar item (debug):
+${safeText(q.item_error)}
       </div>
     `;
 
