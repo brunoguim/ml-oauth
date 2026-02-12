@@ -8,6 +8,25 @@ app.use(express.static("public"));
 
 let STORES = [];
 
+/**
+ * Tenta renovar o access_token usando refresh_token
+ */
+async function refreshAccessToken(store) {
+  const resp = await axios.post("https://api.mercadolibre.com/oauth/token", {
+    grant_type: "refresh_token",
+    client_id: process.env.CLIENT_ID,
+    client_secret: process.env.CLIENT_SECRET,
+    refresh_token: store.refresh_token
+  });
+
+  store.access_token = resp.data.access_token;
+
+  // Em alguns casos o ML pode devolver um refresh_token novo
+  if (resp.data.refresh_token) {
+    store.refresh_token = resp.data.refresh_token;
+  }
+}
+
 app.get("/", (req, res) => {
   res.send(`
     <h2>Autenticar Loja</h2>
@@ -41,7 +60,15 @@ app.get("/auth/callback", async (req, res) => {
     const user_id = user.data.id;
     const store_name = user.data.nickname || ("Loja " + user_id);
 
-    STORES.push({ user_id, store_name, access_token, refresh_token });
+    // Evita duplicar a mesma loja se você autorizar de novo
+    const existing = STORES.find(s => String(s.user_id) === String(user_id));
+    if (existing) {
+      existing.access_token = access_token;
+      existing.refresh_token = refresh_token;
+      existing.store_name = store_name;
+    } else {
+      STORES.push({ user_id, store_name, access_token, refresh_token });
+    }
 
     res.send(`
       <h3>Loja conectada com sucesso!</h3>
@@ -64,31 +91,57 @@ app.get("/questions", async (req, res) => {
     try {
       const response = await axios.get(
         `https://api.mercadolibre.com/questions/search?seller_id=${store.user_id}&status=UNANSWERED`,
-        {
-          headers: {
-            Authorization: `Bearer ${store.access_token}`
-          }
-        }
+        { headers: { Authorization: `Bearer ${store.access_token}` } }
       );
 
       const MAX_DAYS = 90;
-const cutoff = Date.now() - MAX_DAYS * 24 * 60 * 60 * 1000;
+      const cutoff = Date.now() - MAX_DAYS * 24 * 60 * 60 * 1000;
 
-const questions = response.data.questions
-  .filter(q => {
-    const dt = new Date(q.date_created).getTime();
-    return !isNaN(dt) && dt >= cutoff;
-  })
-  .map(q => ({
-    ...q,
-    store_id: store.user_id,
-    store_name: store.store_name
-  }));
-      
+      const questions = response.data.questions
+        .filter(q => {
+          const dt = new Date(q.date_created).getTime();
+          return !isNaN(dt) && dt >= cutoff;
+        })
+        .map(q => ({
+          ...q,
+          store_id: store.user_id,
+          store_name: store.store_name
+        }));
+
       allQuestions = allQuestions.concat(questions);
 
     } catch (error) {
-      console.log("Erro ao buscar perguntas:", error.message);
+      // Se token expirou, tenta renovar e tentar 1x
+      if (error.response?.status === 401) {
+        try {
+          await refreshAccessToken(store);
+
+          const retry = await axios.get(
+            `https://api.mercadolibre.com/questions/search?seller_id=${store.user_id}&status=UNANSWERED`,
+            { headers: { Authorization: `Bearer ${store.access_token}` } }
+          );
+
+          const MAX_DAYS = 90;
+          const cutoff = Date.now() - MAX_DAYS * 24 * 60 * 60 * 1000;
+
+          const questions = retry.data.questions
+            .filter(q => {
+              const dt = new Date(q.date_created).getTime();
+              return !isNaN(dt) && dt >= cutoff;
+            })
+            .map(q => ({
+              ...q,
+              store_id: store.user_id,
+              store_name: store.store_name
+            }));
+
+          allQuestions = allQuestions.concat(questions);
+        } catch (e2) {
+          console.log("Erro ao renovar token (questions):", e2.response?.data || e2.message);
+        }
+      } else {
+        console.log("Erro ao buscar perguntas:", error.response?.data || error.message);
+      }
     }
   }
 
@@ -98,28 +151,43 @@ const questions = response.data.questions
 app.post("/reply", async (req, res) => {
   const { question_id, text, store_id } = req.body;
 
-  const store = STORES.find(s => s.user_id == store_id);
-
+  const store = STORES.find(s => String(s.user_id) === String(store_id));
   if (!store) {
-    return res.json({ error: "Loja não encontrada" });
+    return res.status(400).json({ success: false, error: "Loja não encontrada" });
   }
 
-  try {
-    await axios.post(
+  const sendAnswer = () =>
+    axios.post(
       "https://api.mercadolibre.com/answers",
       { question_id, text },
-      {
-        headers: {
-          Authorization: `Bearer ${store.access_token}`
-        }
-      }
+      { headers: { Authorization: `Bearer ${store.access_token}` } }
     );
 
-    res.json({ success: true });
+  try {
+    await sendAnswer();
+    return res.json({ success: true });
 
   } catch (error) {
-    console.log(error.response?.data || error.message);
-    res.json({ error: "Erro ao responder" });
+    // Se token expirou, tenta renovar e reenviar 1x
+    if (error.response?.status === 401) {
+      try {
+        await refreshAccessToken(store);
+        await sendAnswer();
+        return res.json({ success: true, refreshed: true });
+      } catch (e2) {
+        return res.status(400).json({
+          success: false,
+          error: "Falha ao responder (mesmo após renovar token)",
+          details: e2.response?.data || e2.message
+        });
+      }
+    }
+
+    return res.status(400).json({
+      success: false,
+      error: "Falha ao responder",
+      details: error.response?.data || error.message
+    });
   }
 });
 
