@@ -3,25 +3,68 @@
 <head>
   <title>Painel Mercado Livre</title>
   <style>
-    body { font-family: Arial; background: #f2f2f2; }
-    .container { width: 800px; margin: auto; }
+    body {
+      font-family: Arial;
+      background: #f2f2f2;
+      margin: 0;
+      padding: 20px;
+    }
+
+    .container {
+      width: 800px;
+      margin: auto;
+    }
+
+    h2 {
+      text-align: center;
+    }
+
     .card {
       background: white;
       padding: 15px;
-      margin: 10px 0;
+      margin: 15px 0;
       border-radius: 10px;
       box-shadow: 0 2px 5px rgba(0,0,0,0.1);
     }
-    .question { color: #333; margin-bottom: 10px; }
-    textarea { width: 100%; height: 60px; }
+
+    .store-name {
+      font-size: 13px;
+      color: #666;
+      margin-bottom: 8px;
+    }
+
+    .question {
+      font-size: 15px;
+      margin-bottom: 10px;
+    }
+
+    textarea {
+      width: 100%;
+      height: 60px;
+      padding: 8px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+      resize: none;
+    }
+
     button {
       background: #00a650;
       color: white;
       border: none;
       padding: 8px 15px;
-      margin-top: 5px;
+      margin-top: 8px;
       border-radius: 5px;
       cursor: pointer;
+    }
+
+    button:hover {
+      background: #008f45;
+    }
+
+    .empty {
+      text-align: center;
+      color: #777;
+      margin-top: 40px;
     }
   </style>
 </head>
@@ -41,18 +84,27 @@ async function loadQuestions() {
   container.innerHTML = "";
 
   if (!questions || questions.length === 0) {
-    container.innerHTML = "<p>Nenhuma pergunta pendente.</p>";
+    container.innerHTML = "<div class='empty'>Nenhuma pergunta pendente.</div>";
     return;
   }
 
   questions.forEach(q => {
     const div = document.createElement("div");
     div.className = "card";
+
     div.innerHTML = `
-      <div class="question"><strong>Pergunta:</strong> ${q.text}</div>
+      <div class="store-name">
+        Loja: <strong>${q.store_name}</strong>
+      </div>
+      <div class="question">
+        ${q.text}
+      </div>
       <textarea placeholder="Digite sua resposta"></textarea>
-      <button onclick="reply(${q.id}, ${q.store_id}, this)">Responder</button>
+      <button onclick="reply(${q.id}, ${q.store_id}, this)">
+        Responder
+      </button>
     `;
+
     container.appendChild(div);
   });
 }
@@ -60,10 +112,19 @@ async function loadQuestions() {
 async function reply(id, storeId, button) {
   const text = button.previousElementSibling.value;
 
+  if (!text) {
+    alert("Digite uma resposta.");
+    return;
+  }
+
   await fetch("/reply", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question_id: id, text, store_id: storeId })
+    body: JSON.stringify({
+      question_id: id,
+      text: text,
+      store_id: storeId
+    })
   });
 
   alert("Resposta enviada!");
