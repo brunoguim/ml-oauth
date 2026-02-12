@@ -71,12 +71,20 @@ app.get("/questions", async (req, res) => {
         }
       );
 
-      const questions = response.data.questions.map(q => ({
-        ...q,
-        store_id: store.user_id,
-        store_name: store.store_name
-      }));
+      const MAX_DAYS = 90;
+const cutoff = Date.now() - MAX_DAYS * 24 * 60 * 60 * 1000;
 
+const questions = response.data.questions
+  .filter(q => {
+    const dt = new Date(q.date_created).getTime();
+    return !isNaN(dt) && dt >= cutoff;
+  })
+  .map(q => ({
+    ...q,
+    store_id: store.user_id,
+    store_name: store.store_name
+  }));
+      
       allQuestions = allQuestions.concat(questions);
 
     } catch (error) {
