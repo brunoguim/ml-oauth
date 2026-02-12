@@ -39,8 +39,9 @@ app.get("/auth/callback", async (req, res) => {
     });
 
     const user_id = user.data.id;
+    const store_name = user.data.nickname || ("Loja " + user_id);
 
-    STORES.push({ user_id, access_token, refresh_token });
+    STORES.push({ user_id, store_name, access_token, refresh_token });
 
     res.send(`
       <h3>Loja conectada com sucesso!</h3>
@@ -72,7 +73,8 @@ app.get("/questions", async (req, res) => {
 
       const questions = response.data.questions.map(q => ({
         ...q,
-        store_id: store.user_id
+        store_id: store.user_id,
+        store_name: store.store_name
       }));
 
       allQuestions = allQuestions.concat(questions);
