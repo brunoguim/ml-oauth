@@ -51,19 +51,19 @@ async function loadQuestions() {
     div.innerHTML = `
       <div class="question"><strong>Pergunta:</strong> ${q.text}</div>
       <textarea placeholder="Digite sua resposta"></textarea>
-      <button onclick="reply(${q.id}, this)">Responder</button>
+      <button onclick="reply(${q.id}, ${q.store_id}, this)">Responder</button>
     `;
     container.appendChild(div);
   });
 }
 
-async function reply(id, button) {
+async function reply(id, storeId, button) {
   const text = button.previousElementSibling.value;
 
   await fetch("/reply", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question_id: id, text })
+    body: JSON.stringify({ question_id: id, text, store_id: storeId })
   });
 
   alert("Resposta enviada!");
