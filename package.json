@@ -1,0 +1,12 @@
+{
+  "name": "ml-oauth",
+  "version": "1.0.0",
+  "description": "Servidor OAuth Mercado Livre",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
