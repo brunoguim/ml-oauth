@@ -14,21 +14,33 @@ let STORES = [];
 const ITEM_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 horas
 const itemCache = new Map(); // item_id -> { data, expiresAt }
 
+/**
+ * Busca dados do anúncio (título e foto) de forma pública (sem token),
+ * o que é mais estável para exibir no painel.
+ */
 async function getItemInfo(store, itemId) {
   if (!itemId) return null;
 
   const cached = itemCache.get(itemId);
   if (cached && cached.expiresAt > Date.now()) return cached.data;
 
-  // Busca o item (título e thumbnail)
-  const resp = await axios.get(`https://api.mercadolibre.com/items/${itemId}`, {
-    headers: { Authorization: `Bearer ${store.access_token}` }
-  });
+  // Busca pública do item (sem Authorization)
+  const resp = await axios.get(`https://api.mercadolibre.com/items/${itemId}`);
+
+  const title = resp.data?.title || "";
+
+  // thumbnail pode variar; tentamos várias opções
+  const thumbnail =
+    resp.data?.secure_thumbnail ||
+    resp.data?.thumbnail ||
+    resp.data?.pictures?.[0]?.secure_url ||
+    resp.data?.pictures?.[0]?.url ||
+    "";
 
   const data = {
     item_id: itemId,
-    title: resp.data.title || "",
-    thumbnail: resp.data.thumbnail || ""
+    title,
+    thumbnail
   };
 
   itemCache.set(itemId, { data, expiresAt: Date.now() + ITEM_CACHE_TTL_MS });
