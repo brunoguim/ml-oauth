@@ -8,6 +8,32 @@ app.use(express.static("public"));
 
 let STORES = [];
 
+// Cache simples de itens (para não chamar API toda hora)
+const ITEM_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 horas
+const itemCache = new Map(); // item_id -> { data, expiresAt }
+
+async function getItemInfo(store, itemId) {
+  if (!itemId) return null;
+
+  const cached = itemCache.get(itemId);
+  if (cached && cached.expiresAt > Date.now()) return cached.data;
+
+  // Busca o item (título, thumbnail etc.)
+  const resp = await axios.get(`https://api.mercadolibre.com/items/${itemId}`, {
+    headers: { Authorization: `Bearer ${store.access_token}` }
+  });
+
+  const data = {
+    item_id: itemId,
+    title: resp.data.title || "",
+    thumbnail: resp.data.thumbnail || "" // geralmente vem aqui
+  };
+
+  itemCache.set(itemId, { data, expiresAt: Date.now() + ITEM_CACHE_TTL_MS });
+  return data;
+}
+
+
 /**
  * Tenta renovar o access_token usando refresh_token
  */
