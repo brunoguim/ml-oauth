@@ -4,8 +4,11 @@
   <title>Painel Mercado Livre</title>
   <style>
     body { font-family: Arial; background: #f2f2f2; margin: 0; padding: 20px; }
-    .container { width: 900px; margin: auto; }
-    h2 { text-align: center; margin-bottom: 20px; }
+    .layout { display: flex; gap: 16px; align-items: flex-start; max-width: 1250px; margin: 0 auto; }
+    .left { flex: 1; min-width: 720px; }
+    .right { width: 420px; position: sticky; top: 16px; }
+
+    h2 { text-align: center; margin: 0 0 14px 0; }
 
     .card {
       background: white;
@@ -13,7 +16,21 @@
       margin: 14px 0;
       border-radius: 12px;
       box-shadow: 0 2px 6px rgba(0,0,0,0.10);
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
     }
+
+    .thumb {
+      width: 72px; height: 72px;
+      border-radius: 10px;
+      object-fit: cover;
+      border: 1px solid #eee;
+      background: #fafafa;
+      flex: 0 0 72px;
+    }
+
+    .content { flex: 1; min-width: 0; }
 
     .topline {
       font-size: 13px;
@@ -24,9 +41,19 @@
       margin-bottom: 6px;
     }
 
-    .meta { font-size: 12px; color: #777; margin-bottom: 8px; }
-    .title { font-size: 14px; font-weight: bold; color: #222; margin-bottom: 8px; }
-    .question { font-size: 15px; margin-bottom: 10px; background: #f7f7f7; padding: 10px; border-radius: 10px; }
+    .store { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 65%; }
+    .date { color: #888; white-space: nowrap; font-size: 12px; }
+
+    .title { font-size: 14px; font-weight: bold; color: #222; margin-bottom: 8px; line-height: 1.25; }
+
+    .question {
+      font-size: 15px;
+      color: #111;
+      margin-bottom: 10px;
+      background: #f7f7f7;
+      padding: 10px;
+      border-radius: 10px;
+    }
 
     textarea {
       width: 100%;
@@ -38,7 +65,7 @@
       box-sizing: border-box;
     }
 
-    .actions { display: flex; justify-content: flex-end; margin-top: 8px; }
+    .actions { display: flex; gap: 10px; margin-top: 8px; justify-content: flex-end; }
 
     button {
       background: #00a650;
@@ -49,23 +76,11 @@
       cursor: pointer;
       font-weight: bold;
     }
-
     button:hover { background: #008f45; }
+    button:disabled { opacity: 0.7; cursor: not-allowed; }
 
     .warn { font-size: 12px; color: #aa0000; margin-top: 6px; display:none; }
-    .debug {
-      margin-top: 10px;
-      padding: 10px;
-      border-radius: 10px;
-      background: #fff4f4;
-      border: 1px solid #ffd2d2;
-      color: #8a0000;
-      font-size: 12px;
-      white-space: pre-wrap;
-      display: none;
-    }
 
-    .link { color:#1a73e8; text-decoration:none; }
     .empty {
       text-align: center;
       color: #777;
@@ -75,16 +90,102 @@
       border-radius: 12px;
       box-shadow: 0 2px 6px rgba(0,0,0,0.08);
     }
+
+    /* Right panel (Quick replies) */
+    .panel {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.10);
+      padding: 14px;
+    }
+
+    .panel h3 { margin: 0 0 10px 0; font-size: 16px; }
+    .small { font-size: 12px; color: #777; margin-bottom: 10px; }
+
+    .add-row { display: flex; gap: 8px; }
+    .add-row input {
+      flex: 1;
+      padding: 9px 10px;
+      border-radius: 8px;
+      border: 1px solid #ccc;
+      box-sizing: border-box;
+    }
+
+    .btn-secondary {
+      background: #2f6fed;
+    }
+    .btn-secondary:hover { background: #2459bf; }
+
+    .list { margin-top: 12px; max-height: 520px; overflow: auto; padding-right: 4px; }
+
+    .qr-item {
+      border: 1px solid #eee;
+      border-radius: 10px;
+      padding: 10px;
+      margin-bottom: 10px;
+      background: #fafafa;
+    }
+
+    .qr-text { font-size: 13px; color: #111; margin-bottom: 8px; white-space: pre-wrap; }
+
+    .qr-actions { display: flex; gap: 8px; justify-content: flex-end; }
+    .btn-mini {
+      padding: 7px 10px;
+      border-radius: 7px;
+      border: none;
+      cursor: pointer;
+      font-weight: bold;
+      color: white;
+    }
+    .btn-fill { background: #00a650; }
+    .btn-fill:hover { background: #008f45; }
+    .btn-edit { background: #f5a623; }
+    .btn-edit:hover { background: #d38a1d; }
+    .btn-del { background: #d93025; }
+    .btn-del:hover { background: #b1221a; }
+
+    .hint-selected {
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 10px;
+      background: #eef5ff;
+      border: 1px solid #d9e6ff;
+      color: #1b3d7a;
+      font-size: 12px;
+      display: none;
+    }
   </style>
 </head>
 <body>
 
-<div class="container">
-  <h2>Perguntas não respondidas</h2>
-  <div id="questions"></div>
+<div class="layout">
+  <div class="left">
+    <h2>Perguntas não respondidas</h2>
+    <div id="questions"></div>
+  </div>
+
+  <div class="right">
+    <div class="panel">
+      <h3>Respostas rápidas</h3>
+      <div class="small">Cadastre até 50 respostas. Clique em <b>Usar</b> para preencher a resposta da pergunta selecionada (não envia).</div>
+
+      <div class="add-row">
+        <input id="newQR" placeholder='Ex: "Bom dia! Como posso ajudar?"' maxlength="400" />
+        <button class="btn-secondary" onclick="addQuickReply()">Adicionar</button>
+      </div>
+
+      <div id="selectedHint" class="hint-selected"></div>
+
+      <div class="list" id="qrList"></div>
+    </div>
+  </div>
 </div>
 
 <script>
+let selectedTextarea = null;
+let selectedMeta = null; // {store_name, question_id}
+let quickReplies = [];
+
 function formatDateBR(iso) {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "";
@@ -95,6 +196,14 @@ function safeText(t) {
   return (t || "").toString();
 }
 
+function normalizeThumb(url) {
+  if (!url) return "";
+  return url.startsWith("http://") ? url.replace("http://", "https://") : url;
+}
+
+/** =========================
+ *  Perguntas
+ *  ========================= */
 async function loadQuestions() {
   const response = await fetch("/questions");
   const questions = await response.json();
@@ -117,43 +226,61 @@ async function loadQuestions() {
     const div = document.createElement("div");
     div.className = "card";
 
-    const itemId = q.item_id ? q.item_id : "(sem item_id)";
-    const itemLink = q.item_id ? `https://api.mercadolibre.com/items/${q.item_id}` : "";
+    const thumb = normalizeThumb(q.item_thumbnail || "");
     const title = q.item_title ? q.item_title : "(Título não disponível)";
-    const showDebug = (!q.item_title || !q.item_thumbnail) && q.item_error;
 
     div.innerHTML = `
-      <div class="topline">
-        <div>Loja: <strong>${safeText(q.store_name)}</strong></div>
-        <div>${formatDateBR(q.date_created)}</div>
-      </div>
+      <img class="thumb" src="${thumb}" onerror="this.style.display='none';" />
+      <div class="content">
+        <div class="topline">
+          <div class="store">Loja: <strong>${safeText(q.store_name)}</strong></div>
+          <div class="date">${formatDateBR(q.date_created)}</div>
+        </div>
 
-      <div class="meta">
-        Item ID: <strong>${safeText(itemId)}</strong>
-        ${itemLink ? `&nbsp;|&nbsp;<a class="link" href="${itemLink}" target="_blank">ver item</a>` : ""}
-      </div>
+        <div class="title">${safeText(title)}</div>
 
-      <div class="title">${safeText(title)}</div>
+        <div class="question">
+          <strong>Pergunta:</strong> ${safeText(q.text)}
+        </div>
 
-      <div class="question">
-        <strong>Pergunta:</strong> ${safeText(q.text)}
-      </div>
+        <textarea placeholder="Digite sua resposta"></textarea>
 
-      <textarea placeholder="Digite sua resposta"></textarea>
+        <div class="actions">
+          <button onclick="reply(${q.id}, ${q.store_id}, this)">Responder</button>
+        </div>
 
-      <div class="actions">
-        <button onclick="reply(${q.id}, ${q.store_id}, this)">Responder</button>
-      </div>
-
-      <div class="warn"></div>
-      <div class="debug" style="${showDebug ? "display:block" : "display:none"}">
-Erro ao buscar item (debug):
-${safeText(q.item_error)}
+        <div class="warn"></div>
       </div>
     `;
 
+    // Quando clicar/focar no textarea, ele vira o destino das respostas rápidas
+    const textarea = div.querySelector("textarea");
+    textarea.addEventListener("focus", () => {
+      selectedTextarea = textarea;
+      selectedMeta = { store_name: q.store_name, question_id: q.id };
+      updateSelectedHint();
+    });
+    textarea.addEventListener("click", () => {
+      selectedTextarea = textarea;
+      selectedMeta = { store_name: q.store_name, question_id: q.id };
+      updateSelectedHint();
+    });
+
     container.appendChild(div);
   });
+
+  // Se ainda não tiver nenhum textarea selecionado, seleciona o primeiro automaticamente
+  if (!selectedTextarea) {
+    const first = container.querySelector("textarea");
+    if (first) {
+      selectedTextarea = first;
+      // tenta ler store_name/questao do primeiro card
+      const firstCard = first.closest(".card");
+      const storeName = firstCard?.querySelector(".store strong")?.textContent || "";
+      selectedMeta = { store_name: storeName, question_id: null };
+      updateSelectedHint();
+    }
+  }
 }
 
 async function reply(id, storeId, button) {
@@ -193,6 +320,12 @@ async function reply(id, storeId, button) {
 
     textarea.value = "";
     button.textContent = "Enviado!";
+    // limpa seleção se era esse textarea
+    if (selectedTextarea === textarea) {
+      selectedTextarea = null;
+      selectedMeta = null;
+      updateSelectedHint();
+    }
     setTimeout(() => loadQuestions(), 800);
 
   } catch (e) {
@@ -203,7 +336,135 @@ async function reply(id, storeId, button) {
   }
 }
 
+/** =========================
+ *  Quick Replies UI
+ *  ========================= */
+function updateSelectedHint() {
+  const el = document.getElementById("selectedHint");
+  if (!selectedTextarea) {
+    el.style.display = "block";
+    el.innerHTML = "Selecione uma pergunta clicando no campo de resposta. Depois clique em <b>Usar</b> em uma resposta rápida.";
+    return;
+  }
+
+  el.style.display = "block";
+  el.innerHTML = `Destino selecionado: <b>${safeText(selectedMeta?.store_name || "Loja")}</b> (pergunta selecionada)`;
+}
+
+function renderQuickReplies() {
+  const list = document.getElementById("qrList");
+  list.innerHTML = "";
+
+  if (!quickReplies || quickReplies.length === 0) {
+    list.innerHTML = "<div class='small'>Nenhuma resposta cadastrada.</div>";
+    return;
+  }
+
+  quickReplies.forEach(qr => {
+    const div = document.createElement("div");
+    div.className = "qr-item";
+
+    div.innerHTML = `
+      <div class="qr-text">${safeText(qr.text)}</div>
+      <div class="qr-actions">
+        <button class="btn-mini btn-fill" onclick="useQuickReply(${qr.id})">Usar</button>
+        <button class="btn-mini btn-edit" onclick="editQuickReply(${qr.id})">Editar</button>
+        <button class="btn-mini btn-del" onclick="deleteQuickReply(${qr.id})">Excluir</button>
+      </div>
+    `;
+
+    list.appendChild(div);
+  });
+}
+
+async function loadQuickReplies() {
+  const resp = await fetch("/quick-replies");
+  const data = await resp.json();
+  quickReplies = data.replies || [];
+  renderQuickReplies();
+}
+
+async function addQuickReply() {
+  const input = document.getElementById("newQR");
+  const text = input.value.trim();
+  if (!text) return alert("Digite a resposta rápida.");
+
+  const resp = await fetch("/quick-replies", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text })
+  });
+
+  const data = await resp.json();
+  if (!data.success) return alert(data.error || "Erro ao adicionar.");
+
+  input.value = "";
+  quickReplies = data.replies || [];
+  renderQuickReplies();
+}
+
+function useQuickReply(id) {
+  const qr = quickReplies.find(x => Number(x.id) === Number(id));
+  if (!qr) return;
+
+  if (!selectedTextarea) {
+    alert("Primeiro selecione uma pergunta (clique no campo de resposta dela).");
+    return;
+  }
+
+  // Preenche, mas não envia
+  const current = selectedTextarea.value || "";
+  const addition = qr.text;
+
+  if (!current.trim()) {
+    selectedTextarea.value = addition;
+  } else {
+    // coloca em nova linha para facilitar
+    selectedTextarea.value = current.trimEnd() + "\n" + addition;
+  }
+
+  selectedTextarea.focus();
+}
+
+async function editQuickReply(id) {
+  const qr = quickReplies.find(x => Number(x.id) === Number(id));
+  if (!qr) return;
+
+  const novo = prompt("Editar resposta rápida:", qr.text);
+  if (novo === null) return;
+
+  const text = novo.trim();
+  if (!text) return alert("Texto vazio.");
+
+  const resp = await fetch(`/quick-replies/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text })
+  });
+
+  const data = await resp.json();
+  if (!data.success) return alert(data.error || "Erro ao editar.");
+
+  quickReplies = data.replies || [];
+  renderQuickReplies();
+}
+
+async function deleteQuickReply(id) {
+  if (!confirm("Excluir esta resposta rápida?")) return;
+
+  const resp = await fetch(`/quick-replies/${id}`, { method: "DELETE" });
+  const data = await resp.json();
+  if (!data.success) return alert(data.error || "Erro ao excluir.");
+
+  quickReplies = data.replies || [];
+  renderQuickReplies();
+}
+
+/** =========================
+ *  Init
+ *  ========================= */
 loadQuestions();
+loadQuickReplies();
 setInterval(loadQuestions, 30000);
 </script>
 
