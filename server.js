@@ -1,12 +1,39 @@
 const express = require("express");
 const axios = require("axios");
 require("dotenv").config();
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 app.use(express.json());
 app.use(express.static("public"));
 
 let STORES = [];
+
+/** =========================
+ *  QUICK REPLIES (até 50)
+ *  - Salva em quick_replies.json no servidor
+ *  ========================= */
+const QUICK_REPLIES_FILE = path.join(__dirname, "quick_replies.json");
+const QUICK_REPLIES_LIMIT = 50;
+
+function loadQuickReplies() {
+  try {
+    if (fs.existsSync(QUICK_REPLIES_FILE)) {
+      const raw = fs.readFileSync(QUICK_REPLIES_FILE, "utf-8");
+      const data = JSON.parse(raw);
+      if (Array.isArray(data)) return data.slice(0, QUICK_REPLIES_LIMIT);
+    }
+  } catch (e) {}
+  return [];
+}
+
+function saveQuickReplies(list) {
+  const safe = Array.isArray(list) ? list.slice(0, QUICK_REPLIES_LIMIT) : [];
+  fs.writeFileSync(QUICK_REPLIES_FILE, JSON.stringify(safe, null, 2), "utf-8");
+}
+
+let QUICK_REPLIES = loadQuickReplies();
 
 /** =========================
  *  REFRESH TOKEN
@@ -41,26 +68,9 @@ function chunk(arr, size) {
   return out;
 }
 
-function pickBestImage(body) {
-  // melhor fonte costuma ser pictures[0].secure_url
-  const picSecure = body?.pictures?.[0]?.secure_url;
-  const secureThumb = body?.secure_thumbnail;
-  const thumb = body?.thumbnail;
-  const picUrl = body?.pictures?.[0]?.url;
-
-  const chosen =
-    picSecure ||
-    secureThumb ||
-    thumb ||
-    picUrl ||
-    "";
-
-  return forceHttps(chosen);
-}
-
 /**
- * Busca itens em lote: /items?ids=ID1,ID2,ID3...
- * Retorna um mapa: itemId -> {title, thumbnail, debug}
+ * Busca itens em lote: /items?ids=ID1,ID2...
+ * (se o seu título já está aparecendo, é esse caminho que você está usando)
  */
 async function fetchItemsBulk(store, itemIds) {
   const resultMap = new Map();
@@ -97,18 +107,17 @@ async function fetchItemsBulk(store, itemIds) {
 
       if (code === 200 && body && id) {
         const title = body.title || "";
-        const thumbnail = pickBestImage(body);
 
-        // debug opcional (pra amanhã ver exatamente o que veio)
-        const debug = {
-          secure_thumbnail: body.secure_thumbnail || "",
-          thumbnail: body.thumbnail || "",
-          picture0_secure: body?.pictures?.[0]?.secure_url || "",
-          picture0_url: body?.pictures?.[0]?.url || "",
-          chosen: thumbnail
-        };
+        // thumbnail básico (amanhã podemos melhorar para foto)
+        const thumbnail = forceHttps(
+          body.secure_thumbnail ||
+          body.thumbnail ||
+          body.pictures?.[0]?.secure_url ||
+          body.pictures?.[0]?.url ||
+          ""
+        );
 
-        resultMap.set(id, { title, thumbnail, debug });
+        resultMap.set(id, { title, thumbnail });
       }
     }
   }
@@ -138,11 +147,10 @@ async function fetchQuestionsForStore(store) {
     }
   }
 
-  const questionsRaw = (qResp.data.questions || [])
-    .filter(q => {
-      const dt = new Date(q.date_created).getTime();
-      return !isNaN(dt) && dt >= cutoff;
-    });
+  const questionsRaw = (qResp.data.questions || []).filter(q => {
+    const dt = new Date(q.date_created).getTime();
+    return !isNaN(dt) && dt >= cutoff;
+  });
 
   const itemIds = questionsRaw.map(q => q.item_id).filter(Boolean);
   const itemsMap = await fetchItemsBulk(store, itemIds);
@@ -154,8 +162,7 @@ async function fetchQuestionsForStore(store) {
       store_id: store.user_id,
       store_name: store.store_name,
       item_title: item?.title || "",
-      item_thumbnail: item?.thumbnail || "",
-      item_image_debug: item?.debug || null // amanhã, se precisar, exibimos no painel
+      item_thumbnail: item?.thumbnail || ""
     };
   });
 }
@@ -270,6 +277,58 @@ app.post("/reply", async (req, res) => {
       details: error.response?.data || error.message
     });
   }
+});
+
+/** =========================
+ *  QUICK REPLIES API
+ *  ========================= */
+app.get("/quick-replies", (req, res) => {
+  res.json({ success: true, replies: QUICK_REPLIES });
+});
+
+// adicionar
+app.post("/quick-replies", (req, res) => {
+  const text = (req.body?.text || "").toString().trim();
+  if (!text) return res.status(400).json({ success: false, error: "Texto vazio" });
+
+  if (QUICK_REPLIES.length >= QUICK_REPLIES_LIMIT) {
+    return res.status(400).json({ success: false, error: "Limite de 50 respostas atingido" });
+  }
+
+  const item = { id: Date.now(), text };
+  QUICK_REPLIES.unshift(item);
+  saveQuickReplies(QUICK_REPLIES);
+
+  res.json({ success: true, replies: QUICK_REPLIES });
+});
+
+// editar
+app.put("/quick-replies/:id", (req, res) => {
+  const id = Number(req.params.id);
+  const text = (req.body?.text || "").toString().trim();
+  if (!text) return res.status(400).json({ success: false, error: "Texto vazio" });
+
+  const idx = QUICK_REPLIES.findIndex(r => Number(r.id) === id);
+  if (idx === -1) return res.status(404).json({ success: false, error: "Não encontrado" });
+
+  QUICK_REPLIES[idx].text = text;
+  saveQuickReplies(QUICK_REPLIES);
+
+  res.json({ success: true, replies: QUICK_REPLIES });
+});
+
+// deletar
+app.delete("/quick-replies/:id", (req, res) => {
+  const id = Number(req.params.id);
+  const before = QUICK_REPLIES.length;
+  QUICK_REPLIES = QUICK_REPLIES.filter(r => Number(r.id) !== id);
+
+  if (QUICK_REPLIES.length === before) {
+    return res.status(404).json({ success: false, error: "Não encontrado" });
+  }
+
+  saveQuickReplies(QUICK_REPLIES);
+  res.json({ success: true, replies: QUICK_REPLIES });
 });
 
 app.listen(3000, () => console.log("Servidor rodando na porta 3000"));
