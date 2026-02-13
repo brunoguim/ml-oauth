@@ -111,9 +111,7 @@
       box-sizing: border-box;
     }
 
-    .btn-secondary {
-      background: #2f6fed;
-    }
+    .btn-secondary { background: #2f6fed; }
     .btn-secondary:hover { background: #2459bf; }
 
     .list { margin-top: 12px; max-height: 520px; overflow: auto; padding-right: 4px; }
@@ -186,6 +184,38 @@ let selectedTextarea = null;
 let selectedMeta = null; // {store_name, question_id}
 let quickReplies = [];
 
+/** =========================
+ *  RASCUNHOS (não perder texto ao atualizar)
+ *  ========================= */
+const DRAFT_PREFIX = "ml_draft_v1:";
+
+function draftKey(storeId, questionId) {
+  return `${DRAFT_PREFIX}${storeId}:${questionId}`;
+}
+
+function saveDraft(storeId, questionId, text) {
+  try {
+    localStorage.setItem(draftKey(storeId, questionId), text || "");
+  } catch (e) {}
+}
+
+function loadDraft(storeId, questionId) {
+  try {
+    return localStorage.getItem(draftKey(storeId, questionId)) || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+function clearDraft(storeId, questionId) {
+  try {
+    localStorage.removeItem(draftKey(storeId, questionId));
+  } catch (e) {}
+}
+
+/** =========================
+ *  Util
+ *  ========================= */
 function formatDateBR(iso) {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "";
@@ -253,33 +283,54 @@ async function loadQuestions() {
       </div>
     `;
 
-    // Quando clicar/focar no textarea, ele vira o destino das respostas rápidas
     const textarea = div.querySelector("textarea");
-    textarea.addEventListener("focus", () => {
-      selectedTextarea = textarea;
-      selectedMeta = { store_name: q.store_name, question_id: q.id };
-      updateSelectedHint();
+
+    // 1) restaura rascunho salvo (se existir)
+    const existingDraft = loadDraft(q.store_id, q.id);
+    if (existingDraft && !textarea.value) {
+      textarea.value = existingDraft;
+    }
+
+    // 2) salva rascunho a cada digitação
+    textarea.addEventListener("input", () => {
+      saveDraft(q.store_id, q.id, textarea.value);
     });
-    textarea.addEventListener("click", () => {
+
+    // 3) quando clicar/focar, vira o destino das respostas rápidas
+    const selectThis = () => {
       selectedTextarea = textarea;
-      selectedMeta = { store_name: q.store_name, question_id: q.id };
+      selectedMeta = { store_name: q.store_name, question_id: q.id, store_id: q.store_id };
       updateSelectedHint();
-    });
+    };
+    textarea.addEventListener("focus", selectThis);
+    textarea.addEventListener("click", selectThis);
 
     container.appendChild(div);
   });
 
-  // Se ainda não tiver nenhum textarea selecionado, seleciona o primeiro automaticamente
-  if (!selectedTextarea) {
-    const first = container.querySelector("textarea");
-    if (first) {
-      selectedTextarea = first;
-      // tenta ler store_name/questao do primeiro card
-      const firstCard = first.closest(".card");
-      const storeName = firstCard?.querySelector(".store strong")?.textContent || "";
-      selectedMeta = { store_name: storeName, question_id: null };
-      updateSelectedHint();
+  // Se já existia seleção antes da atualização, tenta manter foco no mesmo draft
+  // (não é garantido, mas ajuda)
+  if (selectedMeta?.question_id && selectedMeta?.store_id) {
+    const key = draftKey(selectedMeta.store_id, selectedMeta.question_id);
+    // procura textarea correspondente pela ordem do DOM (mais simples: pelo draft existir e pergunta igual)
+    const allCards = container.querySelectorAll(".card");
+    for (const card of allCards) {
+      const btn = card.querySelector("button");
+      const ta = card.querySelector("textarea");
+      // se o rascunho salvo existir e o texto do textarea bate, assume que é o mesmo
+      const saved = localStorage.getItem(key);
+      if (saved !== null && ta && (ta.value === saved)) {
+        selectedTextarea = ta;
+        updateSelectedHint();
+        break;
+      }
     }
+  }
+
+  if (!selectedTextarea) {
+    const el = document.getElementById("selectedHint");
+    el.style.display = "block";
+    el.innerHTML = "Selecione uma pergunta clicando no campo de resposta. Depois clique em <b>Usar</b> em uma resposta rápida.";
   }
 }
 
@@ -318,14 +369,18 @@ async function reply(id, storeId, button) {
       return;
     }
 
+    // ✅ sucesso: limpa rascunho salvo daquela pergunta
+    clearDraft(storeId, id);
+
     textarea.value = "";
     button.textContent = "Enviado!";
-    // limpa seleção se era esse textarea
+
     if (selectedTextarea === textarea) {
       selectedTextarea = null;
       selectedMeta = null;
       updateSelectedHint();
     }
+
     setTimeout(() => loadQuestions(), 800);
 
   } catch (e) {
@@ -407,21 +462,22 @@ function useQuickReply(id) {
   const qr = quickReplies.find(x => Number(x.id) === Number(id));
   if (!qr) return;
 
-  if (!selectedTextarea) {
+  if (!selectedTextarea || !selectedMeta?.question_id || !selectedMeta?.store_id) {
     alert("Primeiro selecione uma pergunta (clique no campo de resposta dela).");
     return;
   }
 
-  // Preenche, mas não envia
   const current = selectedTextarea.value || "";
   const addition = qr.text;
 
   if (!current.trim()) {
     selectedTextarea.value = addition;
   } else {
-    // coloca em nova linha para facilitar
     selectedTextarea.value = current.trimEnd() + "\n" + addition;
   }
+
+  // ✅ salva o rascunho imediatamente
+  saveDraft(selectedMeta.store_id, selectedMeta.question_id, selectedTextarea.value);
 
   selectedTextarea.focus();
 }
