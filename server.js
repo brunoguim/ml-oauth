@@ -11,29 +11,80 @@ app.use(express.static("public"));
 let STORES = [];
 
 /** =========================
- *  QUICK REPLIES (até 50)
- *  - Salva em quick_replies.json no servidor
+ *  QUICK REPLIES (até 50) - Persistente em arquivo
+ *  Arquivo: quick_replies.json
  *  ========================= */
 const QUICK_REPLIES_FILE = path.join(__dirname, "quick_replies.json");
 const QUICK_REPLIES_LIMIT = 50;
+const QUICK_REPLY_TEXT_MAX = 4000;
 
-function loadQuickReplies() {
+function normalizeQuickReplies(list) {
+  const arr = Array.isArray(list) ? list : [];
+  const out = [];
+
+  for (let i = 0; i < arr.length && out.length < QUICK_REPLIES_LIMIT; i++) {
+    const r = arr[i] || {};
+    const id = Number(r.id) || 0;
+    const text = String(r.text || "").slice(0, QUICK_REPLY_TEXT_MAX);
+
+    // ignora entradas totalmente inválidas
+    if (!text && !id) continue;
+
+    out.push({ id: id || 0, text });
+  }
+
+  // remove ids duplicados mantendo o primeiro
+  const seen = new Set();
+  const dedup = [];
+  for (const r of out) {
+    const key = Number(r.id) || 0;
+    if (key && seen.has(key)) continue;
+    if (key) seen.add(key);
+    dedup.push(r);
+  }
+
+  // se alguma entry veio com id=0, vamos reatribuir depois ao salvar.
+  return dedup.slice(0, QUICK_REPLIES_LIMIT);
+}
+
+function loadQuickRepliesFromFile() {
   try {
-    if (fs.existsSync(QUICK_REPLIES_FILE)) {
-      const raw = fs.readFileSync(QUICK_REPLIES_FILE, "utf-8");
-      const data = JSON.parse(raw);
-      if (Array.isArray(data)) return data.slice(0, QUICK_REPLIES_LIMIT);
+    if (!fs.existsSync(QUICK_REPLIES_FILE)) {
+      fs.writeFileSync(QUICK_REPLIES_FILE, JSON.stringify([], null, 2), "utf-8");
+      return [];
     }
-  } catch (e) {}
-  return [];
+    const raw = fs.readFileSync(QUICK_REPLIES_FILE, "utf-8");
+    const parsed = JSON.parse(raw);
+    return normalizeQuickReplies(parsed);
+  } catch (e) {
+    return [];
+  }
 }
 
-function saveQuickReplies(list) {
-  const safe = Array.isArray(list) ? list.slice(0, QUICK_REPLIES_LIMIT) : [];
+function saveQuickRepliesToFile(list) {
+  const normalized = normalizeQuickReplies(list);
+
+  // garante ids válidos (se houver id 0) e não duplicados
+  let maxId = 0;
+  for (const r of normalized) maxId = Math.max(maxId, Number(r.id) || 0);
+
+  const seen = new Set();
+  for (const r of normalized) {
+    if (!r.id || r.id <= 0 || seen.has(r.id)) {
+      maxId += 1;
+      r.id = maxId;
+    }
+    seen.add(r.id);
+    r.text = String(r.text || "").slice(0, QUICK_REPLY_TEXT_MAX);
+  }
+
+  const safe = normalized.slice(0, QUICK_REPLIES_LIMIT);
   fs.writeFileSync(QUICK_REPLIES_FILE, JSON.stringify(safe, null, 2), "utf-8");
+  return safe;
 }
 
-let QUICK_REPLIES = loadQuickReplies();
+// estado em memória (carregado do arquivo ao iniciar)
+let QUICK_REPLIES = loadQuickRepliesFromFile();
 
 /** =========================
  *  REFRESH TOKEN
@@ -70,7 +121,6 @@ function chunk(arr, size) {
 
 /**
  * Busca itens em lote: /items?ids=ID1,ID2...
- * (se o seu título já está aparecendo, é esse caminho que você está usando)
  */
 async function fetchItemsBulk(store, itemIds) {
   const resultMap = new Map();
@@ -108,7 +158,6 @@ async function fetchItemsBulk(store, itemIds) {
       if (code === 200 && body && id) {
         const title = body.title || "";
 
-        // thumbnail básico (amanhã podemos melhorar para foto)
         const thumbnail = forceHttps(
           body.secure_thumbnail ||
           body.thumbnail ||
@@ -280,24 +329,31 @@ app.post("/reply", async (req, res) => {
 });
 
 /** =========================
- *  QUICK REPLIES API
+ *  QUICK REPLIES API (compartilhado entre lojas)
+ *  Persistente em quick_replies.json
  *  ========================= */
 app.get("/quick-replies", (req, res) => {
+  // garante que o painel sempre pegue o mais recente (até se outro processo editar o arquivo)
+  QUICK_REPLIES = loadQuickRepliesFromFile();
   res.json({ success: true, replies: QUICK_REPLIES });
 });
 
-// adicionar
+// adicionar (adiciona no final, id incremental)
 app.post("/quick-replies", (req, res) => {
   const text = (req.body?.text || "").toString().trim();
   if (!text) return res.status(400).json({ success: false, error: "Texto vazio" });
+
+  QUICK_REPLIES = loadQuickRepliesFromFile();
 
   if (QUICK_REPLIES.length >= QUICK_REPLIES_LIMIT) {
     return res.status(400).json({ success: false, error: "Limite de 50 respostas atingido" });
   }
 
-  const item = { id: Date.now(), text };
-  QUICK_REPLIES.unshift(item);
-  saveQuickReplies(QUICK_REPLIES);
+  const maxId = QUICK_REPLIES.reduce((m, r) => Math.max(m, Number(r.id) || 0), 0);
+  const nextId = maxId + 1;
+
+  QUICK_REPLIES.push({ id: nextId, text: text.slice(0, QUICK_REPLY_TEXT_MAX) });
+  QUICK_REPLIES = saveQuickRepliesToFile(QUICK_REPLIES);
 
   res.json({ success: true, replies: QUICK_REPLIES });
 });
@@ -308,11 +364,13 @@ app.put("/quick-replies/:id", (req, res) => {
   const text = (req.body?.text || "").toString().trim();
   if (!text) return res.status(400).json({ success: false, error: "Texto vazio" });
 
+  QUICK_REPLIES = loadQuickRepliesFromFile();
+
   const idx = QUICK_REPLIES.findIndex(r => Number(r.id) === id);
   if (idx === -1) return res.status(404).json({ success: false, error: "Não encontrado" });
 
-  QUICK_REPLIES[idx].text = text;
-  saveQuickReplies(QUICK_REPLIES);
+  QUICK_REPLIES[idx].text = text.slice(0, QUICK_REPLY_TEXT_MAX);
+  QUICK_REPLIES = saveQuickRepliesToFile(QUICK_REPLIES);
 
   res.json({ success: true, replies: QUICK_REPLIES });
 });
@@ -320,6 +378,8 @@ app.put("/quick-replies/:id", (req, res) => {
 // deletar
 app.delete("/quick-replies/:id", (req, res) => {
   const id = Number(req.params.id);
+  QUICK_REPLIES = loadQuickRepliesFromFile();
+
   const before = QUICK_REPLIES.length;
   QUICK_REPLIES = QUICK_REPLIES.filter(r => Number(r.id) !== id);
 
@@ -327,7 +387,7 @@ app.delete("/quick-replies/:id", (req, res) => {
     return res.status(404).json({ success: false, error: "Não encontrado" });
   }
 
-  saveQuickReplies(QUICK_REPLIES);
+  QUICK_REPLIES = saveQuickRepliesToFile(QUICK_REPLIES);
   res.json({ success: true, replies: QUICK_REPLIES });
 });
 
