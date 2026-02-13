@@ -41,18 +41,32 @@ function chunk(arr, size) {
   return out;
 }
 
+function pickBestImage(body) {
+  // melhor fonte costuma ser pictures[0].secure_url
+  const picSecure = body?.pictures?.[0]?.secure_url;
+  const secureThumb = body?.secure_thumbnail;
+  const thumb = body?.thumbnail;
+  const picUrl = body?.pictures?.[0]?.url;
+
+  const chosen =
+    picSecure ||
+    secureThumb ||
+    thumb ||
+    picUrl ||
+    "";
+
+  return forceHttps(chosen);
+}
+
 /**
  * Busca itens em lote: /items?ids=ID1,ID2,ID3...
- * Retorna um mapa: itemId -> {title, thumbnail}
+ * Retorna um mapa: itemId -> {title, thumbnail, debug}
  */
 async function fetchItemsBulk(store, itemIds) {
   const resultMap = new Map();
   if (!itemIds || itemIds.length === 0) return resultMap;
 
-  // remove duplicados
   const unique = Array.from(new Set(itemIds));
-
-  // o ML costuma aceitar listas, mas vamos ser conservadores
   const batches = chunk(unique, 20);
 
   const doCall = async (idsBatch) => {
@@ -68,32 +82,33 @@ async function fetchItemsBulk(store, itemIds) {
       resp = await doCall(idsBatch);
     } catch (err) {
       if (err.response?.status === 401) {
-        // token expirou -> renova e tenta de novo
         await refreshAccessToken(store);
         resp = await doCall(idsBatch);
       } else {
-        // se der erro em um batch, seguimos com os demais
         continue;
       }
     }
 
     const arr = resp.data || [];
     for (const entry of arr) {
-      const code = entry?.code; // 200 / 404 / etc
+      const code = entry?.code;
       const body = entry?.body;
-      const id = body?.id || entry?.id; // em geral vem no body.id
+      const id = body?.id || entry?.id;
 
       if (code === 200 && body && id) {
         const title = body.title || "";
-        const thumbnail = forceHttps(
-          body.secure_thumbnail ||
-          body.thumbnail ||
-          body.pictures?.[0]?.secure_url ||
-          body.pictures?.[0]?.url ||
-          ""
-        );
+        const thumbnail = pickBestImage(body);
 
-        resultMap.set(id, { title, thumbnail });
+        // debug opcional (pra amanhã ver exatamente o que veio)
+        const debug = {
+          secure_thumbnail: body.secure_thumbnail || "",
+          thumbnail: body.thumbnail || "",
+          picture0_secure: body?.pictures?.[0]?.secure_url || "",
+          picture0_url: body?.pictures?.[0]?.url || "",
+          chosen: thumbnail
+        };
+
+        resultMap.set(id, { title, thumbnail, debug });
       }
     }
   }
@@ -101,9 +116,6 @@ async function fetchItemsBulk(store, itemIds) {
   return resultMap;
 }
 
-/**
- * Busca perguntas e depois enriquece com title/thumbnail via bulk items.
- */
 async function fetchQuestionsForStore(store) {
   const MAX_DAYS = 90;
   const cutoff = cutoffTimestamp(MAX_DAYS);
@@ -132,27 +144,20 @@ async function fetchQuestionsForStore(store) {
       return !isNaN(dt) && dt >= cutoff;
     });
 
-  // coletar item_ids
-  const itemIds = questionsRaw
-    .map(q => q.item_id)
-    .filter(Boolean);
-
-  // buscar itens em lote
+  const itemIds = questionsRaw.map(q => q.item_id).filter(Boolean);
   const itemsMap = await fetchItemsBulk(store, itemIds);
 
-  // montar retorno final
-  const enriched = questionsRaw.map(q => {
+  return questionsRaw.map(q => {
     const item = itemsMap.get(q.item_id) || null;
     return {
       ...q,
       store_id: store.user_id,
       store_name: store.store_name,
       item_title: item?.title || "",
-      item_thumbnail: item?.thumbnail || ""
+      item_thumbnail: item?.thumbnail || "",
+      item_image_debug: item?.debug || null // amanhã, se precisar, exibimos no painel
     };
   });
-
-  return enriched;
 }
 
 /** =========================
