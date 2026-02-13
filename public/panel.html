@@ -169,7 +169,7 @@
 
       <div class="add-row">
         <input id="newQR" placeholder='Ex: "Bom dia! Como posso ajudar?"' maxlength="400" />
-        <button class="btn-secondary" onclick="addQuickReply()">Adicionar</button>
+        <button class="btn-secondary" id="btnAddQR">Adicionar</button>
       </div>
 
       <div id="selectedHint" class="hint-selected"></div>
@@ -179,9 +179,12 @@
   </div>
 </div>
 
-<script>
+<!-- ✅ Script como módulo para importar o quickRepliesStore.js -->
+<script type="module">
+import { loadQuickReplies, saveQuickReplies } from "./quickRepliesStore.js";
+
 let selectedTextarea = null;
-let selectedMeta = null; // {store_name, question_id}
+let selectedMeta = null; // {store_name, question_id, store_id}
 let quickReplies = [];
 
 /** =========================
@@ -276,7 +279,7 @@ async function loadQuestions() {
         <textarea placeholder="Digite sua resposta"></textarea>
 
         <div class="actions">
-          <button onclick="reply(${q.id}, ${q.store_id}, this)">Responder</button>
+          <button class="btnReply">Responder</button>
         </div>
 
         <div class="warn"></div>
@@ -284,6 +287,9 @@ async function loadQuestions() {
     `;
 
     const textarea = div.querySelector("textarea");
+    const btnReply = div.querySelector(".btnReply");
+
+    btnReply.addEventListener("click", () => reply(q.id, q.store_id, btnReply));
 
     // 1) restaura rascunho salvo (se existir)
     const existingDraft = loadDraft(q.store_id, q.id);
@@ -308,16 +314,12 @@ async function loadQuestions() {
     container.appendChild(div);
   });
 
-  // Se já existia seleção antes da atualização, tenta manter foco no mesmo draft
-  // (não é garantido, mas ajuda)
+  // tentativa de manter seleção anterior (por rascunho)
   if (selectedMeta?.question_id && selectedMeta?.store_id) {
     const key = draftKey(selectedMeta.store_id, selectedMeta.question_id);
-    // procura textarea correspondente pela ordem do DOM (mais simples: pelo draft existir e pergunta igual)
     const allCards = container.querySelectorAll(".card");
     for (const card of allCards) {
-      const btn = card.querySelector("button");
       const ta = card.querySelector("textarea");
-      // se o rascunho salvo existir e o texto do textarea bate, assume que é o mesmo
       const saved = localStorage.getItem(key);
       if (saved !== null && ta && (ta.value === saved)) {
         selectedTextarea = ta;
@@ -392,7 +394,7 @@ async function reply(id, storeId, button) {
 }
 
 /** =========================
- *  Quick Replies UI
+ *  Quick Replies UI (LOCALSTORAGE)
  *  ========================= */
 function updateSelectedHint() {
   const el = document.getElementById("selectedHint");
@@ -422,40 +424,68 @@ function renderQuickReplies() {
     div.innerHTML = `
       <div class="qr-text">${safeText(qr.text)}</div>
       <div class="qr-actions">
-        <button class="btn-mini btn-fill" onclick="useQuickReply(${qr.id})">Usar</button>
-        <button class="btn-mini btn-edit" onclick="editQuickReply(${qr.id})">Editar</button>
-        <button class="btn-mini btn-del" onclick="deleteQuickReply(${qr.id})">Excluir</button>
+        <button class="btn-mini btn-fill" data-id="${qr.id}">Usar</button>
+        <button class="btn-mini btn-edit" data-id="${qr.id}">Editar</button>
+        <button class="btn-mini btn-del" data-id="${qr.id}">Excluir</button>
       </div>
     `;
+
+    div.querySelector(".btn-fill").addEventListener("click", () => useQuickReply(qr.id));
+    div.querySelector(".btn-edit").addEventListener("click", () => editQuickReply(qr.id));
+    div.querySelector(".btn-del").addEventListener("click", () => deleteQuickReply(qr.id));
 
     list.appendChild(div);
   });
 }
 
-async function loadQuickReplies() {
-  const resp = await fetch("/quick-replies");
-  const data = await resp.json();
-  quickReplies = data.replies || [];
+function loadQuickRepliesFromStorage() {
+  // Global (1 conjunto para todas as lojas)
+  // Se quiser por loja, me diga que eu altero pra usar selectedMeta.store_id (ou outra chave)
+  quickReplies = loadQuickReplies();
+  // Mostra apenas as preenchidas (mas mantém 50 no storage)
+  quickReplies = quickReplies.filter(x => (x.text || "").trim().length > 0);
   renderQuickReplies();
 }
 
-async function addQuickReply() {
+function persistQuickRepliesToStorage() {
+  // volta a estrutura de 50 no storage:
+  // pega o que já tem salvo e atualiza só os preenchidos
+  const full = loadQuickReplies(); // 50
+  const filled = quickReplies.slice(); // apenas preenchidos
+
+  // sobrescreve do início com os preenchidos
+  for (let i = 0; i < full.length; i++) {
+    if (i < filled.length) {
+      full[i].text = filled[i].text || "";
+      full[i].title = filled[i].title || `Resposta ${i + 1}`;
+    } else {
+      full[i].text = "";
+      full[i].title = `Resposta ${i + 1}`;
+    }
+  }
+
+  saveQuickReplies(full);
+}
+
+function addQuickReply() {
   const input = document.getElementById("newQR");
   const text = input.value.trim();
   if (!text) return alert("Digite a resposta rápida.");
 
-  const resp = await fetch("/quick-replies", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text })
+  if (quickReplies.length >= 50) {
+    return alert("Limite de 50 respostas rápidas atingido.");
+  }
+
+  // cria no array “visível”
+  quickReplies.push({
+    id: quickReplies.length + 1,
+    title: `Resposta ${quickReplies.length + 1}`,
+    text
   });
 
-  const data = await resp.json();
-  if (!data.success) return alert(data.error || "Erro ao adicionar.");
-
   input.value = "";
-  quickReplies = data.replies || [];
-  renderQuickReplies();
+  persistQuickRepliesToStorage();
+  loadQuickRepliesFromStorage(); // re-render já filtrado
 }
 
 function useQuickReply(id) {
@@ -482,7 +512,7 @@ function useQuickReply(id) {
   selectedTextarea.focus();
 }
 
-async function editQuickReply(id) {
+function editQuickReply(id) {
   const qr = quickReplies.find(x => Number(x.id) === Number(id));
   if (!qr) return;
 
@@ -492,36 +522,45 @@ async function editQuickReply(id) {
   const text = novo.trim();
   if (!text) return alert("Texto vazio.");
 
-  const resp = await fetch(`/quick-replies/${id}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text })
-  });
+  qr.text = text;
 
-  const data = await resp.json();
-  if (!data.success) return alert(data.error || "Erro ao editar.");
-
-  quickReplies = data.replies || [];
-  renderQuickReplies();
+  persistQuickRepliesToStorage();
+  loadQuickRepliesFromStorage();
 }
 
-async function deleteQuickReply(id) {
+function deleteQuickReply(id) {
   if (!confirm("Excluir esta resposta rápida?")) return;
 
-  const resp = await fetch(`/quick-replies/${id}`, { method: "DELETE" });
-  const data = await resp.json();
-  if (!data.success) return alert(data.error || "Erro ao excluir.");
+  quickReplies = quickReplies.filter(x => Number(x.id) !== Number(id));
 
-  quickReplies = data.replies || [];
-  renderQuickReplies();
+  // reindexa ids
+  quickReplies = quickReplies.map((x, idx) => ({ ...x, id: idx + 1 }));
+
+  persistQuickRepliesToStorage();
+  loadQuickRepliesFromStorage();
 }
 
 /** =========================
  *  Init
  *  ========================= */
+
+// Conecta botão "Adicionar"
+document.getElementById("btnAddQR").addEventListener("click", addQuickReply);
+
+// Enter no input adiciona também
+document.getElementById("newQR").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") addQuickReply();
+});
+
 loadQuestions();
-loadQuickReplies();
+loadQuickRepliesFromStorage();
 setInterval(loadQuestions, 30000);
+
+// expõe funções globalmente (se você quiser debugar pelo console)
+window.__qr = {
+  reload: loadQuickRepliesFromStorage,
+  resetAll: () => { localStorage.removeItem("ml_quick_replies_v1"); loadQuickRepliesFromStorage(); }
+};
 </script>
 
 </body>
