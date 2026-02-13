@@ -556,11 +556,23 @@ loadQuestions();
 loadQuickRepliesFromStorage();
 setInterval(loadQuestions, 30000);
 
+// ✅ Sincroniza respostas rápidas entre abas (loja 1 / loja 2 / loja 3)
+window.addEventListener("storage", (e) => {
+  // chave usada pelo quickRepliesStore.js (global)
+  if (e.key === "ml_quick_replies_v1") {
+    loadQuickRepliesFromStorage();
+  }
+});
+
 // expõe funções globalmente (se você quiser debugar pelo console)
 window.__qr = {
   reload: loadQuickRepliesFromStorage,
-  resetAll: () => { localStorage.removeItem("ml_quick_replies_v1"); loadQuickRepliesFromStorage(); }
+  resetAll: () => {
+    localStorage.removeItem("ml_quick_replies_v1");
+    loadQuickRepliesFromStorage();
+  }
 };
+
 </script>
 
 </body>
