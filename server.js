@@ -8,21 +8,72 @@ const app = express();
 app.use(express.json());
 app.use(express.static("public"));
 
-let STORES = [];
-
 /** =========================
- *  QUICK REPLIES (até 50) - Persistente no GitHub (Render Free friendly)
- *  Arquivo no repo: quick_replies.json
+ *  CONFIG GITHUB (Render Free friendly)
  *  ========================= */
-const QUICK_REPLIES_LIMIT = 50;
-const QUICK_REPLY_TEXT_MAX = 4000;
-
-// Config GitHub (Render env vars)
 const GH_TOKEN = process.env.GITHUB_TOKEN || "";
 const GH_OWNER = process.env.GITHUB_OWNER || "brunoguim";
 const GH_REPO = process.env.GITHUB_REPO || "ml-oauth";
 const GH_BRANCH = process.env.GITHUB_BRANCH || "main";
-const GH_PATH = process.env.GITHUB_QR_PATH || "quick_replies.json";
+
+const GH_QR_PATH = process.env.GITHUB_QR_PATH || "quick_replies.json";
+const GH_STORES_PATH = process.env.GITHUB_STORES_PATH || "stores_ml.json";
+
+function b64encode(str) {
+  return Buffer.from(str, "utf8").toString("base64");
+}
+function b64decode(b64) {
+  return Buffer.from(b64, "base64").toString("utf8");
+}
+
+async function ghGetJson(filePath) {
+  const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${encodeURIComponent(filePath)}`;
+  const resp = await axios.get(url, {
+    headers: {
+      Authorization: `token ${GH_TOKEN}`,
+      "User-Agent": "ml-oauth-render",
+      Accept: "application/vnd.github+json"
+    },
+    params: { ref: GH_BRANCH }
+  });
+
+  const sha = resp.data?.sha || null;
+  const contentB64 = resp.data?.content || "";
+  let data;
+  try {
+    data = JSON.parse(b64decode(contentB64));
+  } catch (e) {
+    data = [];
+  }
+  return { data, sha };
+}
+
+async function ghPutJson(filePath, data, message, sha) {
+  const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${encodeURIComponent(filePath)}`;
+  const body = {
+    message,
+    content: b64encode(JSON.stringify(data, null, 2)),
+    branch: GH_BRANCH
+  };
+  if (sha) body.sha = sha;
+
+  const resp = await axios.put(url, body, {
+    headers: {
+      Authorization: `token ${GH_TOKEN}`,
+      "User-Agent": "ml-oauth-render",
+      Accept: "application/vnd.github+json"
+    }
+  });
+
+  const newSha = resp.data?.content?.sha || sha || null;
+  return { sha: newSha };
+}
+
+/** =========================
+ *  QUICK REPLIES (até 50) - GitHub
+ *  ========================= */
+const QUICK_REPLIES_LIMIT = 50;
+const QUICK_REPLY_TEXT_MAX = 4000;
 
 function normalizeQuickReplies(list) {
   const arr = Array.isArray(list) ? list : [];
@@ -46,7 +97,7 @@ function normalizeQuickReplies(list) {
     dedup.push(r);
   }
 
-  // garante ids
+  // ids
   let maxId = 0;
   for (const r of dedup) maxId = Math.max(maxId, Number(r.id) || 0);
 
@@ -63,144 +114,79 @@ function normalizeQuickReplies(list) {
   return dedup.slice(0, QUICK_REPLIES_LIMIT);
 }
 
-function b64encode(str) {
-  return Buffer.from(str, "utf8").toString("base64");
-}
-function b64decode(b64) {
-  return Buffer.from(b64, "base64").toString("utf8");
-}
+let QR_CACHE = [];
+let QR_SHA = null;
+let QR_AT = 0;
 
-// cache em memória (pra ficar rápido)
-let QUICK_REPLIES_CACHE = [];
-let QUICK_REPLIES_CACHE_SHA = null;
-let QUICK_REPLIES_CACHE_AT = 0;
-
-// fallback local (não é persistente no Render, mas ajuda se GitHub cair temporariamente)
-const LOCAL_FALLBACK_FILE = path.join(__dirname, "quick_replies_fallback.json");
-
-function saveLocalFallback(list) {
-  try {
-    fs.writeFileSync(LOCAL_FALLBACK_FILE, JSON.stringify(list, null, 2), "utf-8");
-  } catch (e) {}
-}
-function loadLocalFallback() {
-  try {
-    if (!fs.existsSync(LOCAL_FALLBACK_FILE)) return [];
-    const raw = fs.readFileSync(LOCAL_FALLBACK_FILE, "utf-8");
-    return normalizeQuickReplies(JSON.parse(raw));
-  } catch (e) {
-    return [];
-  }
-}
-
-async function githubGetQuickReplies(force = false) {
-  // cache por 5s pra evitar estourar rate limit
+async function loadQuickReplies(force = false) {
   const now = Date.now();
-  if (!force && now - QUICK_REPLIES_CACHE_AT < 5000 && Array.isArray(QUICK_REPLIES_CACHE)) {
-    return { replies: QUICK_REPLIES_CACHE, sha: QUICK_REPLIES_CACHE_SHA };
-  }
+  if (!force && now - QR_AT < 5000) return { replies: QR_CACHE, sha: QR_SHA };
 
-  if (!GH_TOKEN) {
-    const local = loadLocalFallback();
-    QUICK_REPLIES_CACHE = local;
-    QUICK_REPLIES_CACHE_SHA = null;
-    QUICK_REPLIES_CACHE_AT = now;
-    return { replies: local, sha: null };
-  }
+  const { data, sha } = await ghGetJson(GH_QR_PATH);
+  const normalized = normalizeQuickReplies(data);
 
-  const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${encodeURIComponent(GH_PATH)}`;
+  QR_CACHE = normalized;
+  QR_SHA = sha;
+  QR_AT = now;
 
-  try {
-    const resp = await axios.get(url, {
-      headers: {
-        Authorization: `token ${GH_TOKEN}`,
-        "User-Agent": "ml-oauth-render",
-        Accept: "application/vnd.github+json"
-      },
-      params: { ref: GH_BRANCH }
-    });
-
-    const contentB64 = resp.data?.content || "";
-    const sha = resp.data?.sha || null;
-
-    let parsed = [];
-    try {
-      parsed = JSON.parse(b64decode(contentB64));
-    } catch (e) {
-      parsed = [];
-    }
-
-    const normalized = normalizeQuickReplies(parsed);
-
-    QUICK_REPLIES_CACHE = normalized;
-    QUICK_REPLIES_CACHE_SHA = sha;
-    QUICK_REPLIES_CACHE_AT = now;
-
-    saveLocalFallback(normalized);
-
-    return { replies: normalized, sha };
-  } catch (err) {
-    const local = loadLocalFallback();
-    QUICK_REPLIES_CACHE = local;
-    QUICK_REPLIES_CACHE_SHA = null;
-    QUICK_REPLIES_CACHE_AT = now;
-    return { replies: local, sha: null };
-  }
+  return { replies: normalized, sha };
 }
 
-async function githubPutQuickReplies(newReplies, message = "Update quick replies") {
-  const normalized = normalizeQuickReplies(newReplies);
+async function saveQuickReplies(list, message) {
+  const normalized = normalizeQuickReplies(list);
+  const current = await loadQuickReplies(true);
 
-  if (!GH_TOKEN) {
-    saveLocalFallback(normalized);
-    QUICK_REPLIES_CACHE = normalized;
-    QUICK_REPLIES_CACHE_SHA = null;
-    QUICK_REPLIES_CACHE_AT = Date.now();
-    return { replies: normalized, ok: false, note: "Sem GITHUB_TOKEN" };
-  }
+  const put = await ghPutJson(GH_QR_PATH, normalized, message, current.sha);
+  QR_CACHE = normalized;
+  QR_SHA = put.sha;
+  QR_AT = Date.now();
 
-  const current = await githubGetQuickReplies(true);
-  const sha = current.sha;
-
-  const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${encodeURIComponent(GH_PATH)}`;
-
-  const body = {
-    message,
-    content: b64encode(JSON.stringify(normalized, null, 2)),
-    branch: GH_BRANCH
-  };
-  if (sha) body.sha = sha;
-
-  try {
-    const resp = await axios.put(url, body, {
-      headers: {
-        Authorization: `token ${GH_TOKEN}`,
-        "User-Agent": "ml-oauth-render",
-        Accept: "application/vnd.github+json"
-      }
-    });
-
-    const newSha = resp.data?.content?.sha || sha || null;
-
-    QUICK_REPLIES_CACHE = normalized;
-    QUICK_REPLIES_CACHE_SHA = newSha;
-    QUICK_REPLIES_CACHE_AT = Date.now();
-
-    saveLocalFallback(normalized);
-
-    return { replies: normalized, ok: true };
-  } catch (err) {
-    saveLocalFallback(normalized);
-    QUICK_REPLIES_CACHE = normalized;
-    QUICK_REPLIES_CACHE_SHA = sha || null;
-    QUICK_REPLIES_CACHE_AT = Date.now();
-
-    return { replies: normalized, ok: false, error: err.response?.data || err.message };
-  }
+  return normalized;
 }
 
 /** =========================
- *  REFRESH TOKEN
+ *  STORES ML - GitHub (resolve sumiço de perguntas)
+ *  ========================= */
+let STORES = [];
+let STORES_SHA = null;
+let STORES_AT = 0;
+
+function normalizeStores(list) {
+  const arr = Array.isArray(list) ? list : [];
+  // guardamos o mínimo necessário + refresh_token (essencial)
+  return arr
+    .map(s => ({
+      user_id: s?.user_id,
+      store_name: s?.store_name || "",
+      refresh_token: s?.refresh_token || "",
+      access_token: s?.access_token || ""
+    }))
+    .filter(s => s.user_id && s.refresh_token);
+}
+
+async function loadStores(force = false) {
+  const now = Date.now();
+  if (!force && now - STORES_AT < 5000 && Array.isArray(STORES) && STORES.length) {
+    return STORES;
+  }
+
+  const { data, sha } = await ghGetJson(GH_STORES_PATH);
+  STORES = normalizeStores(data);
+  STORES_SHA = sha;
+  STORES_AT = now;
+  return STORES;
+}
+
+async function saveStores(message) {
+  const safe = normalizeStores(STORES);
+  const put = await ghPutJson(GH_STORES_PATH, safe, message, STORES_SHA);
+  STORES_SHA = put.sha;
+  STORES_AT = Date.now();
+  return safe;
+}
+
+/** =========================
+ *  REFRESH TOKEN (Mercado Livre)
  *  ========================= */
 async function refreshAccessToken(store) {
   const resp = await axios.post("https://api.mercadolibre.com/oauth/token", {
@@ -211,7 +197,12 @@ async function refreshAccessToken(store) {
   });
 
   store.access_token = resp.data.access_token;
-  if (resp.data.refresh_token) store.refresh_token = resp.data.refresh_token;
+
+  // se vier refresh novo, salva e persiste no GitHub
+  if (resp.data.refresh_token && resp.data.refresh_token !== store.refresh_token) {
+    store.refresh_token = resp.data.refresh_token;
+    await saveStores("Update ML refresh_token");
+  }
 }
 
 /** =========================
@@ -244,9 +235,7 @@ async function fetchItemsBulk(store, itemIds) {
 
   const doCall = async (idsBatch) => {
     const url = `https://api.mercadolibre.com/items?ids=${idsBatch.join(",")}`;
-    return axios.get(url, {
-      headers: { Authorization: `Bearer ${store.access_token}` }
-    });
+    return axios.get(url, { headers: { Authorization: `Bearer ${store.access_token}` } });
   };
 
   for (const idsBatch of batches) {
@@ -270,7 +259,6 @@ async function fetchItemsBulk(store, itemIds) {
 
       if (code === 200 && body && id) {
         const title = body.title || "";
-
         const thumbnail = forceHttps(
           body.secure_thumbnail ||
           body.thumbnail ||
@@ -278,12 +266,10 @@ async function fetchItemsBulk(store, itemIds) {
           body.pictures?.[0]?.url ||
           ""
         );
-
         resultMap.set(id, { title, thumbnail });
       }
     }
   }
-
   return resultMap;
 }
 
@@ -351,7 +337,7 @@ app.get("/auth/callback", async (req, res) => {
       grant_type: "authorization_code",
       client_id: process.env.CLIENT_ID,
       client_secret: process.env.CLIENT_SECRET,
-      code: code,
+      code,
       redirect_uri: process.env.REDIRECT_URI
     });
 
@@ -365,6 +351,8 @@ app.get("/auth/callback", async (req, res) => {
     const user_id = user.data.id;
     const store_name = user.data.nickname || ("Loja " + user_id);
 
+    await loadStores(true);
+
     const existing = STORES.find(s => String(s.user_id) === String(user_id));
     if (existing) {
       existing.access_token = access_token;
@@ -373,6 +361,8 @@ app.get("/auth/callback", async (req, res) => {
     } else {
       STORES.push({ user_id, store_name, access_token, refresh_token });
     }
+
+    await saveStores("Connect/Update ML store");
 
     res.send(`
       <h3>Loja conectada com sucesso!</h3>
@@ -388,6 +378,9 @@ app.get("/auth/callback", async (req, res) => {
 });
 
 app.get("/questions", async (req, res) => {
+  // garante que sempre temos lojas mesmo após restart
+  await loadStores(false);
+
   let allQuestions = [];
 
   for (const store of STORES) {
@@ -404,6 +397,8 @@ app.get("/questions", async (req, res) => {
 
 app.post("/reply", async (req, res) => {
   const { question_id, text, store_id } = req.body;
+
+  await loadStores(false);
 
   const store = STORES.find(s => String(s.user_id) === String(store_id));
   if (!store) return res.status(400).json({ success: false, error: "Loja não encontrada" });
@@ -445,7 +440,7 @@ app.post("/reply", async (req, res) => {
  *  QUICK REPLIES API (GitHub)
  *  ========================= */
 app.get("/quick-replies", async (req, res) => {
-  const { replies } = await githubGetQuickReplies(false);
+  const { replies } = await loadQuickReplies(false);
   res.json({ success: true, replies });
 });
 
@@ -453,7 +448,7 @@ app.post("/quick-replies", async (req, res) => {
   const text = (req.body?.text || "").toString().trim();
   if (!text) return res.status(400).json({ success: false, error: "Texto vazio" });
 
-  const cur = await githubGetQuickReplies(true);
+  const cur = await loadQuickReplies(true);
   const list = Array.isArray(cur.replies) ? cur.replies : [];
 
   if (list.length >= QUICK_REPLIES_LIMIT) {
@@ -464,9 +459,8 @@ app.post("/quick-replies", async (req, res) => {
   const nextId = maxId + 1;
 
   list.push({ id: nextId, text: text.slice(0, QUICK_REPLY_TEXT_MAX) });
-
-  const saved = await githubPutQuickReplies(list, "Add quick reply");
-  res.json({ success: true, replies: saved.replies });
+  const saved = await saveQuickReplies(list, "Add quick reply");
+  res.json({ success: true, replies: saved });
 });
 
 app.put("/quick-replies/:id", async (req, res) => {
@@ -474,22 +468,21 @@ app.put("/quick-replies/:id", async (req, res) => {
   const text = (req.body?.text || "").toString().trim();
   if (!text) return res.status(400).json({ success: false, error: "Texto vazio" });
 
-  const cur = await githubGetQuickReplies(true);
+  const cur = await loadQuickReplies(true);
   const list = Array.isArray(cur.replies) ? cur.replies : [];
 
   const idx = list.findIndex(r => Number(r.id) === id);
   if (idx === -1) return res.status(404).json({ success: false, error: "Não encontrado" });
 
   list[idx].text = text.slice(0, QUICK_REPLY_TEXT_MAX);
-
-  const saved = await githubPutQuickReplies(list, "Edit quick reply");
-  res.json({ success: true, replies: saved.replies });
+  const saved = await saveQuickReplies(list, "Edit quick reply");
+  res.json({ success: true, replies: saved });
 });
 
 app.delete("/quick-replies/:id", async (req, res) => {
   const id = Number(req.params.id);
 
-  const cur = await githubGetQuickReplies(true);
+  const cur = await loadQuickReplies(true);
   let list = Array.isArray(cur.replies) ? cur.replies : [];
 
   const before = list.length;
@@ -499,8 +492,8 @@ app.delete("/quick-replies/:id", async (req, res) => {
     return res.status(404).json({ success: false, error: "Não encontrado" });
   }
 
-  const saved = await githubPutQuickReplies(list, "Delete quick reply");
-  res.json({ success: true, replies: saved.replies });
+  const saved = await saveQuickReplies(list, "Delete quick reply");
+  res.json({ success: true, replies: saved });
 });
 
 app.listen(3000, () => console.log("Servidor rodando na porta 3000"));
