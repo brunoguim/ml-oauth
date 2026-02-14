@@ -44,7 +44,19 @@
     .store { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 65%; }
     .date { color: #888; white-space: nowrap; font-size: 12px; }
 
-    .title { font-size: 14px; font-weight: bold; color: #222; margin-bottom: 8px; line-height: 1.25; }
+    .title {
+      font-size: 14px;
+      font-weight: bold;
+      color: #222;
+      margin-bottom: 8px;
+      line-height: 1.25;
+    }
+
+    .title a {
+      color: #1a73e8;
+      text-decoration: none;
+    }
+    .title a:hover { text-decoration: underline; }
 
     .question {
       font-size: 15px;
@@ -65,7 +77,7 @@
       box-sizing: border-box;
     }
 
-    .actions { display: flex; gap: 10px; margin-top: 8px; justify-content: flex-end; }
+    .actions { display: flex; gap: 10px; margin-top: 8px; justify-content: flex-end; flex-wrap: wrap; }
 
     button {
       background: #00a650;
@@ -79,6 +91,9 @@
     button:hover { background: #008f45; }
     button:disabled { opacity: 0.7; cursor: not-allowed; }
 
+    .btn-secondary { background: #2f6fed; }
+    .btn-secondary:hover { background: #2459bf; }
+
     .warn { font-size: 12px; color: #aa0000; margin-top: 6px; display:none; }
 
     .empty {
@@ -90,6 +105,37 @@
       border-radius: 12px;
       box-shadow: 0 2px 6px rgba(0,0,0,0.08);
     }
+
+    /* History */
+    .history {
+      margin-top: 10px;
+      border: 1px solid #eee;
+      border-radius: 10px;
+      padding: 10px;
+      background: #fbfbfb;
+      display: none;
+    }
+    .history-title {
+      font-weight: bold;
+      font-size: 12px;
+      color: #333;
+      margin-bottom: 8px;
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+    }
+    .history small { color: #777; font-weight: normal; }
+    .hist-item {
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: #fff;
+      border: 1px solid #f0f0f0;
+      margin-bottom: 8px;
+    }
+    .hist-q { font-size: 13px; color: #111; margin-bottom: 6px; white-space: pre-wrap; }
+    .hist-a { font-size: 13px; color: #0b6b2a; white-space: pre-wrap; }
+    .hist-meta { font-size: 11px; color: #888; margin-bottom: 6px; }
 
     /* Right panel (Quick replies) */
     .panel {
@@ -110,9 +156,6 @@
       border: 1px solid #ccc;
       box-sizing: border-box;
     }
-
-    .btn-secondary { background: #2f6fed; }
-    .btn-secondary:hover { background: #2459bf; }
 
     .list { margin-top: 12px; max-height: 520px; overflow: auto; padding-right: 4px; }
 
@@ -192,18 +235,9 @@ const DRAFT_PREFIX = "ml_draft_v1:";
 function draftKey(storeId, questionId) {
   return `${DRAFT_PREFIX}${storeId}:${questionId}`;
 }
-
-function saveDraft(storeId, questionId, text) {
-  try { localStorage.setItem(draftKey(storeId, questionId), text || ""); } catch (e) {}
-}
-
-function loadDraft(storeId, questionId) {
-  try { return localStorage.getItem(draftKey(storeId, questionId)) || ""; } catch (e) { return ""; }
-}
-
-function clearDraft(storeId, questionId) {
-  try { localStorage.removeItem(draftKey(storeId, questionId)); } catch (e) {}
-}
+function saveDraft(storeId, questionId, text) { try { localStorage.setItem(draftKey(storeId, questionId), text || ""); } catch(e){} }
+function loadDraft(storeId, questionId) { try { return localStorage.getItem(draftKey(storeId, questionId)) || ""; } catch(e){ return ""; } }
+function clearDraft(storeId, questionId) { try { localStorage.removeItem(draftKey(storeId, questionId)); } catch(e){} }
 
 /** =========================
  *  Util
@@ -213,21 +247,111 @@ function formatDateBR(iso) {
   if (isNaN(d.getTime())) return "";
   return d.toLocaleString("pt-BR");
 }
+function safeText(t) { return (t || "").toString(); }
+function normalizeThumb(url) { return url ? (url.startsWith("http://") ? url.replace("http://","https://") : url) : ""; }
 
-function safeText(t) {
-  return (t || "").toString();
-}
+/** =========================
+ *  Histórico (por anúncio)
+ *  ========================= */
+const historyLoaded = new Set(); // key = storeId:itemId
 
-function normalizeThumb(url) {
-  if (!url) return "";
-  return url.startsWith("http://") ? url.replace("http://", "https://") : url;
+async function toggleHistory(storeId, itemId, containerId, buttonEl) {
+  const box = document.getElementById(containerId);
+  if (!box) return;
+
+  // toggle
+  const isOpen = box.style.display === "block";
+  if (isOpen) {
+    box.style.display = "none";
+    if (buttonEl) buttonEl.textContent = "Histórico";
+    return;
+  }
+
+  box.style.display = "block";
+  if (buttonEl) buttonEl.textContent = "Fechar histórico";
+
+  const key = `${storeId}:${itemId}`;
+  if (historyLoaded.has(key)) return;
+
+  // loading
+  box.innerHTML = `
+    <div class="history-title">
+      <span>Histórico do anúncio</span>
+      <small>carregando...</small>
+    </div>
+  `;
+
+  try {
+    const resp = await fetch(`/question-history?store_id=${encodeURIComponent(storeId)}&item_id=${encodeURIComponent(itemId)}&limit=12`, { cache: "no-store" });
+    const data = await resp.json();
+
+    if (!data.success) {
+      box.innerHTML = `
+        <div class="history-title">
+          <span>Histórico do anúncio</span>
+          <small>erro</small>
+        </div>
+        <div class="small">${safeText(data.error || "Falha ao carregar histórico")}</div>
+      `;
+      return;
+    }
+
+    const hist = data.history || [];
+    historyLoaded.add(key);
+
+    if (hist.length === 0) {
+      box.innerHTML = `
+        <div class="history-title">
+          <span>Histórico do anúncio</span>
+          <small>vazio</small>
+        </div>
+        <div class="small">Nenhum histórico encontrado.</div>
+      `;
+      return;
+    }
+
+    const rows = hist.map(h => {
+      const q = safeText(h.text);
+      const a = safeText(h.answer_text);
+      const qd = formatDateBR(h.date_created);
+      const ad = h.answer_date ? formatDateBR(h.answer_date) : "";
+      const hasA = !!a;
+
+      return `
+        <div class="hist-item">
+          <div class="hist-meta">Pergunta em: ${qd}</div>
+          <div class="hist-q"><b>P:</b> ${q}</div>
+          ${hasA ? `
+            <div class="hist-meta">Resposta em: ${ad || "-"}</div>
+            <div class="hist-a"><b>R:</b> ${a}</div>
+          ` : `<div class="small">Ainda sem resposta</div>`}
+        </div>
+      `;
+    }).join("");
+
+    box.innerHTML = `
+      <div class="history-title">
+        <span>Histórico do anúncio</span>
+        <small>${hist.length} itens</small>
+      </div>
+      ${rows}
+    `;
+  } catch (e) {
+    box.innerHTML = `
+      <div class="history-title">
+        <span>Histórico do anúncio</span>
+        <small>erro</small>
+      </div>
+      <div class="small">Erro de conexão ao buscar histórico.</div>
+    `;
+  }
 }
 
 /** =========================
  *  Perguntas
  *  ========================= */
 async function loadQuestions() {
-  const response = await fetch("/questions");
+  const response = await fetch("/questions", { cache: "no-store" });
   const questions = await response.json();
 
   const container = document.getElementById("questions");
@@ -250,6 +374,14 @@ async function loadQuestions() {
 
     const thumb = normalizeThumb(q.item_thumbnail || "");
     const title = q.item_title ? q.item_title : "(Título não disponível)";
+    const link = q.item_permalink || "";
+    const itemId = q.item_id || "";
+
+    const historyId = `hist_${q.store_id}_${itemId}`.replace(/[^a-zA-Z0-9_]/g, "_");
+
+    const titleHtml = link
+      ? `<a href="${link}" target="_blank" rel="noopener noreferrer">${safeText(title)}</a>`
+      : `${safeText(title)}`;
 
     div.innerHTML = `
       <img class="thumb" src="${thumb}" onerror="this.style.display='none';" />
@@ -259,7 +391,7 @@ async function loadQuestions() {
           <div class="date">${formatDateBR(q.date_created)}</div>
         </div>
 
-        <div class="title">${safeText(title)}</div>
+        <div class="title">${titleHtml}</div>
 
         <div class="question">
           <strong>Pergunta:</strong> ${safeText(q.text)}
@@ -268,8 +400,11 @@ async function loadQuestions() {
         <textarea placeholder="Digite sua resposta"></textarea>
 
         <div class="actions">
+          <button class="btn-secondary" onclick="toggleHistory(${q.store_id}, '${safeText(itemId)}', '${historyId}', this)">Histórico</button>
           <button onclick="reply(${q.id}, ${q.store_id}, this)">Responder</button>
         </div>
+
+        <div id="${historyId}" class="history"></div>
 
         <div class="warn"></div>
       </div>
@@ -357,7 +492,7 @@ async function reply(id, storeId, button) {
 }
 
 /** =========================
- *  Quick Replies (SERVIDOR + arquivo)
+ *  Quick Replies UI
  *  ========================= */
 function updateSelectedHint() {
   const el = document.getElementById("selectedHint");
@@ -398,12 +533,9 @@ function renderQuickReplies() {
 }
 
 async function loadQuickReplies() {
-  const resp = await fetch("/quick-replies");
+  const resp = await fetch("/quick-replies", { cache: "no-store" });
   const data = await resp.json();
-  if (!data.success) {
-    alert(data.error || "Erro ao carregar respostas rápidas.");
-    return;
-  }
+  if (!data.success) return;
   quickReplies = data.replies || [];
   renderQuickReplies();
 }
@@ -439,11 +571,8 @@ function useQuickReply(id) {
   const current = selectedTextarea.value || "";
   const addition = qr.text;
 
-  if (!current.trim()) {
-    selectedTextarea.value = addition;
-  } else {
-    selectedTextarea.value = current.trimEnd() + "\n" + addition;
-  }
+  if (!current.trim()) selectedTextarea.value = addition;
+  else selectedTextarea.value = current.trimEnd() + "\n" + addition;
 
   saveDraft(selectedMeta.store_id, selectedMeta.question_id, selectedTextarea.value);
   selectedTextarea.focus();
@@ -489,6 +618,7 @@ async function deleteQuickReply(id) {
 loadQuestions();
 loadQuickReplies();
 setInterval(loadQuestions, 30000);
+setInterval(loadQuickReplies, 8000);
 </script>
 
 </body>
