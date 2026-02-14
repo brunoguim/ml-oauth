@@ -11,12 +11,18 @@ app.use(express.static("public"));
 let STORES = [];
 
 /** =========================
- *  QUICK REPLIES (até 50) - Persistente em arquivo
- *  Arquivo: quick_replies.json
+ *  QUICK REPLIES (até 50) - Persistente no GitHub (Render Free friendly)
+ *  Arquivo no repo: quick_replies.json
  *  ========================= */
-const QUICK_REPLIES_FILE = path.join(__dirname, "quick_replies.json");
 const QUICK_REPLIES_LIMIT = 50;
 const QUICK_REPLY_TEXT_MAX = 4000;
+
+// Config GitHub (Render env vars)
+const GH_TOKEN = process.env.GITHUB_TOKEN || "";
+const GH_OWNER = process.env.GITHUB_OWNER || "brunoguim";
+const GH_REPO = process.env.GITHUB_REPO || "ml-oauth";
+const GH_BRANCH = process.env.GITHUB_BRANCH || "main";
+const GH_PATH = process.env.GITHUB_QR_PATH || "quick_replies.json";
 
 function normalizeQuickReplies(list) {
   const arr = Array.isArray(list) ? list : [];
@@ -26,14 +32,11 @@ function normalizeQuickReplies(list) {
     const r = arr[i] || {};
     const id = Number(r.id) || 0;
     const text = String(r.text || "").slice(0, QUICK_REPLY_TEXT_MAX);
-
-    // ignora entradas totalmente inválidas
     if (!text && !id) continue;
-
     out.push({ id: id || 0, text });
   }
 
-  // remove ids duplicados mantendo o primeiro
+  // dedup por id
   const seen = new Set();
   const dedup = [];
   for (const r of out) {
@@ -43,48 +46,158 @@ function normalizeQuickReplies(list) {
     dedup.push(r);
   }
 
-  // se alguma entry veio com id=0, vamos reatribuir depois ao salvar.
+  // garante ids
+  let maxId = 0;
+  for (const r of dedup) maxId = Math.max(maxId, Number(r.id) || 0);
+
+  const seen2 = new Set();
+  for (const r of dedup) {
+    if (!r.id || r.id <= 0 || seen2.has(r.id)) {
+      maxId += 1;
+      r.id = maxId;
+    }
+    seen2.add(r.id);
+    r.text = String(r.text || "").slice(0, QUICK_REPLY_TEXT_MAX);
+  }
+
   return dedup.slice(0, QUICK_REPLIES_LIMIT);
 }
 
-function loadQuickRepliesFromFile() {
+function b64encode(str) {
+  return Buffer.from(str, "utf8").toString("base64");
+}
+function b64decode(b64) {
+  return Buffer.from(b64, "base64").toString("utf8");
+}
+
+// cache em memória (pra ficar rápido)
+let QUICK_REPLIES_CACHE = [];
+let QUICK_REPLIES_CACHE_SHA = null;
+let QUICK_REPLIES_CACHE_AT = 0;
+
+// fallback local (não é persistente no Render, mas ajuda se GitHub cair temporariamente)
+const LOCAL_FALLBACK_FILE = path.join(__dirname, "quick_replies_fallback.json");
+
+function saveLocalFallback(list) {
   try {
-    if (!fs.existsSync(QUICK_REPLIES_FILE)) {
-      fs.writeFileSync(QUICK_REPLIES_FILE, JSON.stringify([], null, 2), "utf-8");
-      return [];
-    }
-    const raw = fs.readFileSync(QUICK_REPLIES_FILE, "utf-8");
-    const parsed = JSON.parse(raw);
-    return normalizeQuickReplies(parsed);
+    fs.writeFileSync(LOCAL_FALLBACK_FILE, JSON.stringify(list, null, 2), "utf-8");
+  } catch (e) {}
+}
+function loadLocalFallback() {
+  try {
+    if (!fs.existsSync(LOCAL_FALLBACK_FILE)) return [];
+    const raw = fs.readFileSync(LOCAL_FALLBACK_FILE, "utf-8");
+    return normalizeQuickReplies(JSON.parse(raw));
   } catch (e) {
     return [];
   }
 }
 
-function saveQuickRepliesToFile(list) {
-  const normalized = normalizeQuickReplies(list);
-
-  // garante ids válidos (se houver id 0) e não duplicados
-  let maxId = 0;
-  for (const r of normalized) maxId = Math.max(maxId, Number(r.id) || 0);
-
-  const seen = new Set();
-  for (const r of normalized) {
-    if (!r.id || r.id <= 0 || seen.has(r.id)) {
-      maxId += 1;
-      r.id = maxId;
-    }
-    seen.add(r.id);
-    r.text = String(r.text || "").slice(0, QUICK_REPLY_TEXT_MAX);
+async function githubGetQuickReplies(force = false) {
+  // cache por 5s pra evitar estourar rate limit
+  const now = Date.now();
+  if (!force && now - QUICK_REPLIES_CACHE_AT < 5000 && Array.isArray(QUICK_REPLIES_CACHE)) {
+    return { replies: QUICK_REPLIES_CACHE, sha: QUICK_REPLIES_CACHE_SHA };
   }
 
-  const safe = normalized.slice(0, QUICK_REPLIES_LIMIT);
-  fs.writeFileSync(QUICK_REPLIES_FILE, JSON.stringify(safe, null, 2), "utf-8");
-  return safe;
+  if (!GH_TOKEN) {
+    const local = loadLocalFallback();
+    QUICK_REPLIES_CACHE = local;
+    QUICK_REPLIES_CACHE_SHA = null;
+    QUICK_REPLIES_CACHE_AT = now;
+    return { replies: local, sha: null };
+  }
+
+  const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${encodeURIComponent(GH_PATH)}`;
+
+  try {
+    const resp = await axios.get(url, {
+      headers: {
+        Authorization: `token ${GH_TOKEN}`,
+        "User-Agent": "ml-oauth-render",
+        Accept: "application/vnd.github+json"
+      },
+      params: { ref: GH_BRANCH }
+    });
+
+    const contentB64 = resp.data?.content || "";
+    const sha = resp.data?.sha || null;
+
+    let parsed = [];
+    try {
+      parsed = JSON.parse(b64decode(contentB64));
+    } catch (e) {
+      parsed = [];
+    }
+
+    const normalized = normalizeQuickReplies(parsed);
+
+    QUICK_REPLIES_CACHE = normalized;
+    QUICK_REPLIES_CACHE_SHA = sha;
+    QUICK_REPLIES_CACHE_AT = now;
+
+    saveLocalFallback(normalized);
+
+    return { replies: normalized, sha };
+  } catch (err) {
+    const local = loadLocalFallback();
+    QUICK_REPLIES_CACHE = local;
+    QUICK_REPLIES_CACHE_SHA = null;
+    QUICK_REPLIES_CACHE_AT = now;
+    return { replies: local, sha: null };
+  }
 }
 
-// estado em memória (carregado do arquivo ao iniciar)
-let QUICK_REPLIES = loadQuickRepliesFromFile();
+async function githubPutQuickReplies(newReplies, message = "Update quick replies") {
+  const normalized = normalizeQuickReplies(newReplies);
+
+  if (!GH_TOKEN) {
+    saveLocalFallback(normalized);
+    QUICK_REPLIES_CACHE = normalized;
+    QUICK_REPLIES_CACHE_SHA = null;
+    QUICK_REPLIES_CACHE_AT = Date.now();
+    return { replies: normalized, ok: false, note: "Sem GITHUB_TOKEN" };
+  }
+
+  const current = await githubGetQuickReplies(true);
+  const sha = current.sha;
+
+  const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${encodeURIComponent(GH_PATH)}`;
+
+  const body = {
+    message,
+    content: b64encode(JSON.stringify(normalized, null, 2)),
+    branch: GH_BRANCH
+  };
+  if (sha) body.sha = sha;
+
+  try {
+    const resp = await axios.put(url, body, {
+      headers: {
+        Authorization: `token ${GH_TOKEN}`,
+        "User-Agent": "ml-oauth-render",
+        Accept: "application/vnd.github+json"
+      }
+    });
+
+    const newSha = resp.data?.content?.sha || sha || null;
+
+    QUICK_REPLIES_CACHE = normalized;
+    QUICK_REPLIES_CACHE_SHA = newSha;
+    QUICK_REPLIES_CACHE_AT = Date.now();
+
+    saveLocalFallback(normalized);
+
+    return { replies: normalized, ok: true };
+  } catch (err) {
+    saveLocalFallback(normalized);
+    QUICK_REPLIES_CACHE = normalized;
+    QUICK_REPLIES_CACHE_SHA = sha || null;
+    QUICK_REPLIES_CACHE_AT = Date.now();
+
+    return { replies: normalized, ok: false, error: err.response?.data || err.message };
+  }
+}
 
 /** =========================
  *  REFRESH TOKEN
@@ -329,66 +442,65 @@ app.post("/reply", async (req, res) => {
 });
 
 /** =========================
- *  QUICK REPLIES API (compartilhado entre lojas)
- *  Persistente em quick_replies.json
+ *  QUICK REPLIES API (GitHub)
  *  ========================= */
-app.get("/quick-replies", (req, res) => {
-  // garante que o painel sempre pegue o mais recente (até se outro processo editar o arquivo)
-  QUICK_REPLIES = loadQuickRepliesFromFile();
-  res.json({ success: true, replies: QUICK_REPLIES });
+app.get("/quick-replies", async (req, res) => {
+  const { replies } = await githubGetQuickReplies(false);
+  res.json({ success: true, replies });
 });
 
-// adicionar (adiciona no final, id incremental)
-app.post("/quick-replies", (req, res) => {
+app.post("/quick-replies", async (req, res) => {
   const text = (req.body?.text || "").toString().trim();
   if (!text) return res.status(400).json({ success: false, error: "Texto vazio" });
 
-  QUICK_REPLIES = loadQuickRepliesFromFile();
+  const cur = await githubGetQuickReplies(true);
+  const list = Array.isArray(cur.replies) ? cur.replies : [];
 
-  if (QUICK_REPLIES.length >= QUICK_REPLIES_LIMIT) {
+  if (list.length >= QUICK_REPLIES_LIMIT) {
     return res.status(400).json({ success: false, error: "Limite de 50 respostas atingido" });
   }
 
-  const maxId = QUICK_REPLIES.reduce((m, r) => Math.max(m, Number(r.id) || 0), 0);
+  const maxId = list.reduce((m, r) => Math.max(m, Number(r.id) || 0), 0);
   const nextId = maxId + 1;
 
-  QUICK_REPLIES.push({ id: nextId, text: text.slice(0, QUICK_REPLY_TEXT_MAX) });
-  QUICK_REPLIES = saveQuickRepliesToFile(QUICK_REPLIES);
+  list.push({ id: nextId, text: text.slice(0, QUICK_REPLY_TEXT_MAX) });
 
-  res.json({ success: true, replies: QUICK_REPLIES });
+  const saved = await githubPutQuickReplies(list, "Add quick reply");
+  res.json({ success: true, replies: saved.replies });
 });
 
-// editar
-app.put("/quick-replies/:id", (req, res) => {
+app.put("/quick-replies/:id", async (req, res) => {
   const id = Number(req.params.id);
   const text = (req.body?.text || "").toString().trim();
   if (!text) return res.status(400).json({ success: false, error: "Texto vazio" });
 
-  QUICK_REPLIES = loadQuickRepliesFromFile();
+  const cur = await githubGetQuickReplies(true);
+  const list = Array.isArray(cur.replies) ? cur.replies : [];
 
-  const idx = QUICK_REPLIES.findIndex(r => Number(r.id) === id);
+  const idx = list.findIndex(r => Number(r.id) === id);
   if (idx === -1) return res.status(404).json({ success: false, error: "Não encontrado" });
 
-  QUICK_REPLIES[idx].text = text.slice(0, QUICK_REPLY_TEXT_MAX);
-  QUICK_REPLIES = saveQuickRepliesToFile(QUICK_REPLIES);
+  list[idx].text = text.slice(0, QUICK_REPLY_TEXT_MAX);
 
-  res.json({ success: true, replies: QUICK_REPLIES });
+  const saved = await githubPutQuickReplies(list, "Edit quick reply");
+  res.json({ success: true, replies: saved.replies });
 });
 
-// deletar
-app.delete("/quick-replies/:id", (req, res) => {
+app.delete("/quick-replies/:id", async (req, res) => {
   const id = Number(req.params.id);
-  QUICK_REPLIES = loadQuickRepliesFromFile();
 
-  const before = QUICK_REPLIES.length;
-  QUICK_REPLIES = QUICK_REPLIES.filter(r => Number(r.id) !== id);
+  const cur = await githubGetQuickReplies(true);
+  let list = Array.isArray(cur.replies) ? cur.replies : [];
 
-  if (QUICK_REPLIES.length === before) {
+  const before = list.length;
+  list = list.filter(r => Number(r.id) !== id);
+
+  if (list.length === before) {
     return res.status(404).json({ success: false, error: "Não encontrado" });
   }
 
-  QUICK_REPLIES = saveQuickRepliesToFile(QUICK_REPLIES);
-  res.json({ success: true, replies: QUICK_REPLIES });
+  const saved = await githubPutQuickReplies(list, "Delete quick reply");
+  res.json({ success: true, replies: saved.replies });
 });
 
 app.listen(3000, () => console.log("Servidor rodando na porta 3000"));
