@@ -1,8 +1,6 @@
 const express = require("express");
 const axios = require("axios");
 require("dotenv").config();
-const fs = require("fs");
-const path = require("path");
 
 const app = express();
 app.use(express.json());
@@ -27,7 +25,9 @@ function b64decode(b64) {
 }
 
 async function ghGetJson(filePath) {
+  if (!GH_TOKEN) throw new Error("GITHUB_TOKEN não configurado");
   const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${encodeURIComponent(filePath)}`;
+
   const resp = await axios.get(url, {
     headers: {
       Authorization: `token ${GH_TOKEN}`,
@@ -49,7 +49,9 @@ async function ghGetJson(filePath) {
 }
 
 async function ghPutJson(filePath, data, message, sha) {
+  if (!GH_TOKEN) throw new Error("GITHUB_TOKEN não configurado");
   const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${encodeURIComponent(filePath)}`;
+
   const body = {
     message,
     content: b64encode(JSON.stringify(data, null, 2)),
@@ -135,8 +137,8 @@ async function loadQuickReplies(force = false) {
 async function saveQuickReplies(list, message) {
   const normalized = normalizeQuickReplies(list);
   const current = await loadQuickReplies(true);
-
   const put = await ghPutJson(GH_QR_PATH, normalized, message, current.sha);
+
   QR_CACHE = normalized;
   QR_SHA = put.sha;
   QR_AT = Date.now();
@@ -145,7 +147,7 @@ async function saveQuickReplies(list, message) {
 }
 
 /** =========================
- *  STORES ML - GitHub (resolve sumiço de perguntas)
+ *  STORES ML - GitHub (não some após restart)
  *  ========================= */
 let STORES = [];
 let STORES_SHA = null;
@@ -153,7 +155,6 @@ let STORES_AT = 0;
 
 function normalizeStores(list) {
   const arr = Array.isArray(list) ? list : [];
-  // guardamos o mínimo necessário + refresh_token (essencial)
   return arr
     .map(s => ({
       user_id: s?.user_id,
@@ -166,14 +167,13 @@ function normalizeStores(list) {
 
 async function loadStores(force = false) {
   const now = Date.now();
-  if (!force && now - STORES_AT < 5000 && Array.isArray(STORES) && STORES.length) {
-    return STORES;
-  }
+  if (!force && now - STORES_AT < 5000 && Array.isArray(STORES) && STORES.length) return STORES;
 
   const { data, sha } = await ghGetJson(GH_STORES_PATH);
   STORES = normalizeStores(data);
   STORES_SHA = sha;
   STORES_AT = now;
+
   return STORES;
 }
 
@@ -198,7 +198,7 @@ async function refreshAccessToken(store) {
 
   store.access_token = resp.data.access_token;
 
-  // se vier refresh novo, salva e persiste no GitHub
+  // se vier refresh novo, persiste
   if (resp.data.refresh_token && resp.data.refresh_token !== store.refresh_token) {
     store.refresh_token = resp.data.refresh_token;
     await saveStores("Update ML refresh_token");
@@ -225,6 +225,7 @@ function chunk(arr, size) {
 
 /**
  * Busca itens em lote: /items?ids=ID1,ID2...
+ * Retorna title, thumbnail e permalink
  */
 async function fetchItemsBulk(store, itemIds) {
   const resultMap = new Map();
@@ -235,9 +236,7 @@ async function fetchItemsBulk(store, itemIds) {
 
   const doCall = async (idsBatch) => {
     const url = `https://api.mercadolibre.com/items?ids=${idsBatch.join(",")}`;
-    return axios.get(url, {
-      headers: { Authorization: `Bearer ${store.access_token}` }
-    });
+    return axios.get(url, { headers: { Authorization: `Bearer ${store.access_token}` } });
   };
 
   for (const idsBatch of batches) {
@@ -261,7 +260,6 @@ async function fetchItemsBulk(store, itemIds) {
 
       if (code === 200 && body && id) {
         const title = body.title || "";
-
         const thumbnail = forceHttps(
           body.secure_thumbnail ||
           body.thumbnail ||
@@ -269,8 +267,7 @@ async function fetchItemsBulk(store, itemIds) {
           body.pictures?.[0]?.url ||
           ""
         );
-
-        const permalink = body.permalink || ""; // ✅ link do anúncio
+        const permalink = body.permalink || "";
 
         resultMap.set(id, { title, thumbnail, permalink });
       }
@@ -279,7 +276,6 @@ async function fetchItemsBulk(store, itemIds) {
 
   return resultMap;
 }
-
 
 async function fetchQuestionsForStore(store) {
   const MAX_DAYS = 90;
@@ -318,9 +314,46 @@ async function fetchQuestionsForStore(store) {
       store_id: store.user_id,
       store_name: store.store_name,
       item_title: item?.title || "",
-      item_thumbnail: item?.thumbnail || ""
+      item_thumbnail: item?.thumbnail || "",
+      item_permalink: item?.permalink || "" // ✅ para abrir em nova aba no título
     };
   });
+}
+
+/** =========================
+ *  HISTÓRICO POR ANÚNCIO
+ *  ========================= */
+async function fetchHistoryForItem(store, itemId, limit = 10) {
+  const lim = Math.max(1, Math.min(Number(limit) || 10, 30));
+
+  const doCall = () =>
+    axios.get(
+      `https://api.mercadolibre.com/questions/search?item_id=${encodeURIComponent(itemId)}&seller_id=${encodeURIComponent(store.user_id)}&limit=${lim}`,
+      { headers: { Authorization: `Bearer ${store.access_token}` } }
+    );
+
+  let resp;
+  try {
+    resp = await doCall();
+  } catch (err) {
+    if (err.response?.status === 401) {
+      await refreshAccessToken(store);
+      resp = await doCall();
+    } else {
+      throw err;
+    }
+  }
+
+  const questions = resp.data?.questions || [];
+  return questions.map(q => ({
+    id: q.id,
+    date_created: q.date_created,
+    text: q.text || "",
+    answer_text: q.answer?.text || "",
+    answer_date: q.answer?.date_created || "",
+    from_id: q.from?.id || null,
+    from_nickname: q.from?.nickname || ""
+  }));
 }
 
 /** =========================
@@ -386,11 +419,9 @@ app.get("/auth/callback", async (req, res) => {
 });
 
 app.get("/questions", async (req, res) => {
-  // garante que sempre temos lojas mesmo após restart
   await loadStores(false);
 
   let allQuestions = [];
-
   for (const store of STORES) {
     try {
       const qs = await fetchQuestionsForStore(store);
@@ -401,6 +432,30 @@ app.get("/questions", async (req, res) => {
   }
 
   res.json(allQuestions);
+});
+
+/** Histórico do anúncio (perguntas e respostas) */
+app.get("/question-history", async (req, res) => {
+  try {
+    const store_id = req.query.store_id;
+    const item_id = req.query.item_id;
+    const limit = req.query.limit || 10;
+
+    if (!store_id || !item_id) {
+      return res.status(400).json({ success: false, error: "store_id e item_id são obrigatórios" });
+    }
+
+    await loadStores(false);
+
+    const store = (STORES || []).find(s => String(s.user_id) === String(store_id));
+    if (!store) return res.status(400).json({ success: false, error: "Loja não encontrada" });
+
+    const history = await fetchHistoryForItem(store, item_id, limit);
+    return res.json({ success: true, history });
+  } catch (e) {
+    console.log("Erro /question-history:", e.response?.data || e.message);
+    return res.status(500).json({ success: false, error: "Falha ao buscar histórico" });
+  }
 });
 
 app.post("/reply", async (req, res) => {
@@ -468,6 +523,7 @@ app.post("/quick-replies", async (req, res) => {
 
   list.push({ id: nextId, text: text.slice(0, QUICK_REPLY_TEXT_MAX) });
   const saved = await saveQuickReplies(list, "Add quick reply");
+
   res.json({ success: true, replies: saved });
 });
 
@@ -484,6 +540,7 @@ app.put("/quick-replies/:id", async (req, res) => {
 
   list[idx].text = text.slice(0, QUICK_REPLY_TEXT_MAX);
   const saved = await saveQuickReplies(list, "Edit quick reply");
+
   res.json({ success: true, replies: saved });
 });
 
