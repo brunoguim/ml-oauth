@@ -235,7 +235,9 @@ async function fetchItemsBulk(store, itemIds) {
 
   const doCall = async (idsBatch) => {
     const url = `https://api.mercadolibre.com/items?ids=${idsBatch.join(",")}`;
-    return axios.get(url, { headers: { Authorization: `Bearer ${store.access_token}` } });
+    return axios.get(url, {
+      headers: { Authorization: `Bearer ${store.access_token}` }
+    });
   };
 
   for (const idsBatch of batches) {
@@ -259,6 +261,7 @@ async function fetchItemsBulk(store, itemIds) {
 
       if (code === 200 && body && id) {
         const title = body.title || "";
+
         const thumbnail = forceHttps(
           body.secure_thumbnail ||
           body.thumbnail ||
@@ -266,12 +269,17 @@ async function fetchItemsBulk(store, itemIds) {
           body.pictures?.[0]?.url ||
           ""
         );
-        resultMap.set(id, { title, thumbnail });
+
+        const permalink = body.permalink || ""; // ✅ link do anúncio
+
+        resultMap.set(id, { title, thumbnail, permalink });
       }
     }
   }
+
   return resultMap;
 }
+
 
 async function fetchQuestionsForStore(store) {
   const MAX_DAYS = 90;
