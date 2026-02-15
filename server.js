@@ -7,7 +7,7 @@ app.use(express.json());
 app.use(express.static("public"));
 
 /** =========================
- *  CONFIG GITHUB (Render Free friendly)
+ *  CONFIG GITHUB
  *  ========================= */
 const GH_TOKEN = process.env.GITHUB_TOKEN || "";
 const GH_OWNER = process.env.GITHUB_OWNER || "brunoguim";
@@ -25,32 +25,52 @@ function b64decode(b64) {
 }
 
 async function ghGetJson(filePath) {
-  if (!GH_TOKEN) throw new Error("GITHUB_TOKEN não configurado");
-  const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${encodeURIComponent(filePath)}`;
+  // Nunca derruba o servidor
+  if (!GH_TOKEN) return { data: [], sha: null };
 
-  const resp = await axios.get(url, {
-    headers: {
-      Authorization: `token ${GH_TOKEN}`,
-      "User-Agent": "ml-oauth-render",
-      Accept: "application/vnd.github+json"
-    },
-    params: { ref: GH_BRANCH }
-  });
+  const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${encodeURIComponent(
+    filePath
+  )}`;
 
-  const sha = resp.data?.sha || null;
-  const contentB64 = resp.data?.content || "";
-  let data;
   try {
-    data = JSON.parse(b64decode(contentB64));
+    const resp = await axios.get(url, {
+      headers: {
+        Authorization: `token ${GH_TOKEN}`,
+        "User-Agent": "ml-oauth-render",
+        Accept: "application/vnd.github+json"
+      },
+      params: { ref: GH_BRANCH }
+    });
+
+    const sha = resp.data?.sha || null;
+    const contentB64 = resp.data?.content || "";
+
+    let data = [];
+    try {
+      data = JSON.parse(b64decode(contentB64));
+    } catch (e) {
+      data = [];
+    }
+
+    return { data, sha };
   } catch (e) {
-    data = [];
+    console.log(
+      "[GitHub] ghGetJson falhou:",
+      filePath,
+      e.response?.status,
+      e.response?.data || e.message
+    );
+    return { data: [], sha: null };
   }
-  return { data, sha };
 }
 
 async function ghPutJson(filePath, data, message, sha) {
-  if (!GH_TOKEN) throw new Error("GITHUB_TOKEN não configurado");
-  const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${encodeURIComponent(filePath)}`;
+  // Nunca derruba o servidor
+  if (!GH_TOKEN) return { sha: sha || null, ok: false };
+
+  const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/contents/${encodeURIComponent(
+    filePath
+  )}`;
 
   const body = {
     message,
@@ -59,16 +79,26 @@ async function ghPutJson(filePath, data, message, sha) {
   };
   if (sha) body.sha = sha;
 
-  const resp = await axios.put(url, body, {
-    headers: {
-      Authorization: `token ${GH_TOKEN}`,
-      "User-Agent": "ml-oauth-render",
-      Accept: "application/vnd.github+json"
-    }
-  });
+  try {
+    const resp = await axios.put(url, body, {
+      headers: {
+        Authorization: `token ${GH_TOKEN}`,
+        "User-Agent": "ml-oauth-render",
+        Accept: "application/vnd.github+json"
+      }
+    });
 
-  const newSha = resp.data?.content?.sha || sha || null;
-  return { sha: newSha };
+    const newSha = resp.data?.content?.sha || sha || null;
+    return { sha: newSha, ok: true };
+  } catch (e) {
+    console.log(
+      "[GitHub] ghPutJson falhou:",
+      filePath,
+      e.response?.status,
+      e.response?.data || e.message
+    );
+    return { sha: sha || null, ok: false };
+  }
 }
 
 /** =========================
@@ -99,7 +129,7 @@ function normalizeQuickReplies(list) {
     dedup.push(r);
   }
 
-  // ids
+  // ids garantidos
   let maxId = 0;
   for (const r of dedup) maxId = Math.max(maxId, Number(r.id) || 0);
 
@@ -137,6 +167,7 @@ async function loadQuickReplies(force = false) {
 async function saveQuickReplies(list, message) {
   const normalized = normalizeQuickReplies(list);
   const current = await loadQuickReplies(true);
+
   const put = await ghPutJson(GH_QR_PATH, normalized, message, current.sha);
 
   QR_CACHE = normalized;
@@ -147,7 +178,7 @@ async function saveQuickReplies(list, message) {
 }
 
 /** =========================
- *  STORES ML - GitHub (não some após restart)
+ *  STORES ML (lojas) - GitHub
  *  ========================= */
 let STORES = [];
 let STORES_SHA = null;
@@ -167,7 +198,10 @@ function normalizeStores(list) {
 
 async function loadStores(force = false) {
   const now = Date.now();
-  if (!force && now - STORES_AT < 5000 && Array.isArray(STORES) && STORES.length) return STORES;
+
+  if (!force && now - STORES_AT < 5000 && Array.isArray(STORES) && STORES.length) {
+    return STORES;
+  }
 
   const { data, sha } = await ghGetJson(GH_STORES_PATH);
   STORES = normalizeStores(data);
@@ -198,7 +232,7 @@ async function refreshAccessToken(store) {
 
   store.access_token = resp.data.access_token;
 
-  // se vier refresh novo, persiste
+  // se vier refresh novo, persiste no GitHub
   if (resp.data.refresh_token && resp.data.refresh_token !== store.refresh_token) {
     store.refresh_token = resp.data.refresh_token;
     await saveStores("Update ML refresh_token");
@@ -262,13 +296,12 @@ async function fetchItemsBulk(store, itemIds) {
         const title = body.title || "";
         const thumbnail = forceHttps(
           body.secure_thumbnail ||
-          body.thumbnail ||
-          body.pictures?.[0]?.secure_url ||
-          body.pictures?.[0]?.url ||
-          ""
+            body.thumbnail ||
+            body.pictures?.[0]?.secure_url ||
+            body.pictures?.[0]?.url ||
+            ""
         );
         const permalink = body.permalink || "";
-
         resultMap.set(id, { title, thumbnail, permalink });
       }
     }
@@ -315,7 +348,7 @@ async function fetchQuestionsForStore(store) {
       store_name: store.store_name,
       item_title: item?.title || "",
       item_thumbnail: item?.thumbnail || "",
-      item_permalink: item?.permalink || "" // ✅ para abrir em nova aba no título
+      item_permalink: item?.permalink || "" // ✅ link do anúncio
     };
   });
 }
@@ -328,7 +361,9 @@ async function fetchHistoryForItem(store, itemId, limit = 10) {
 
   const doCall = () =>
     axios.get(
-      `https://api.mercadolibre.com/questions/search?item_id=${encodeURIComponent(itemId)}&seller_id=${encodeURIComponent(store.user_id)}&limit=${lim}`,
+      `https://api.mercadolibre.com/questions/search?item_id=${encodeURIComponent(
+        itemId
+      )}&seller_id=${encodeURIComponent(store.user_id)}&limit=${lim}`,
       { headers: { Authorization: `Bearer ${store.access_token}` } }
     );
 
@@ -413,25 +448,38 @@ app.get("/auth/callback", async (req, res) => {
       <a href="/panel.html">Ir para o painel</a>
     `);
   } catch (error) {
-    console.log(error.response?.data || error.message);
+    console.log("Erro ao autenticar ML:", error.response?.data || error.message);
     res.send("Erro ao autenticar.");
   }
 });
 
+/** NÃO quebra o painel: sempre retorna JSON (lista ou []) */
 app.get("/questions", async (req, res) => {
-  await loadStores(false);
+  try {
+    await loadStores(false);
 
-  let allQuestions = [];
-  for (const store of STORES) {
-    try {
-      const qs = await fetchQuestionsForStore(store);
-      allQuestions = allQuestions.concat(qs);
-    } catch (error) {
-      console.log("Erro ao buscar perguntas/enriquecer:", error.response?.data || error.message);
+    if (!Array.isArray(STORES) || STORES.length === 0) {
+      return res.json([]);
     }
-  }
 
-  res.json(allQuestions);
+    let allQuestions = [];
+    for (const store of STORES) {
+      try {
+        const qs = await fetchQuestionsForStore(store);
+        allQuestions = allQuestions.concat(qs);
+      } catch (error) {
+        console.log(
+          "Erro ao buscar perguntas/enriquecer:",
+          error.response?.data || error.message
+        );
+      }
+    }
+
+    return res.json(allQuestions);
+  } catch (e) {
+    console.log("Falha geral /questions:", e.response?.data || e.message);
+    return res.json([]);
+  }
 });
 
 /** Histórico do anúncio (perguntas e respostas) */
@@ -448,7 +496,9 @@ app.get("/question-history", async (req, res) => {
     await loadStores(false);
 
     const store = (STORES || []).find(s => String(s.user_id) === String(store_id));
-    if (!store) return res.status(400).json({ success: false, error: "Loja não encontrada" });
+    if (!store) {
+      return res.status(400).json({ success: false, error: "Loja não encontrada" });
+    }
 
     const history = await fetchHistoryForItem(store, item_id, limit);
     return res.json({ success: true, history });
@@ -461,41 +511,45 @@ app.get("/question-history", async (req, res) => {
 app.post("/reply", async (req, res) => {
   const { question_id, text, store_id } = req.body;
 
-  await loadStores(false);
-
-  const store = STORES.find(s => String(s.user_id) === String(store_id));
-  if (!store) return res.status(400).json({ success: false, error: "Loja não encontrada" });
-
-  const sendAnswer = () =>
-    axios.post(
-      "https://api.mercadolibre.com/answers",
-      { question_id, text },
-      { headers: { Authorization: `Bearer ${store.access_token}` } }
-    );
-
   try {
-    await sendAnswer();
-    return res.json({ success: true });
-  } catch (error) {
-    if (error.response?.status === 401) {
-      try {
-        await refreshAccessToken(store);
-        await sendAnswer();
-        return res.json({ success: true, refreshed: true });
-      } catch (e2) {
-        return res.status(400).json({
-          success: false,
-          error: "Falha ao responder após renovar token",
-          details: e2.response?.data || e2.message
-        });
-      }
-    }
+    await loadStores(false);
 
-    return res.status(400).json({
-      success: false,
-      error: "Falha ao responder",
-      details: error.response?.data || error.message
-    });
+    const store = STORES.find(s => String(s.user_id) === String(store_id));
+    if (!store) return res.status(400).json({ success: false, error: "Loja não encontrada" });
+
+    const sendAnswer = () =>
+      axios.post(
+        "https://api.mercadolibre.com/answers",
+        { question_id, text },
+        { headers: { Authorization: `Bearer ${store.access_token}` } }
+      );
+
+    try {
+      await sendAnswer();
+      return res.json({ success: true });
+    } catch (error) {
+      if (error.response?.status === 401) {
+        try {
+          await refreshAccessToken(store);
+          await sendAnswer();
+          return res.json({ success: true, refreshed: true });
+        } catch (e2) {
+          return res.status(400).json({
+            success: false,
+            error: "Falha ao responder após renovar token",
+            details: e2.response?.data || e2.message
+          });
+        }
+      }
+
+      return res.status(400).json({
+        success: false,
+        error: "Falha ao responder",
+        details: error.response?.data || error.message
+      });
+    }
+  } catch (e) {
+    return res.status(500).json({ success: false, error: "Erro interno ao responder" });
   }
 });
 
@@ -503,28 +557,36 @@ app.post("/reply", async (req, res) => {
  *  QUICK REPLIES API (GitHub)
  *  ========================= */
 app.get("/quick-replies", async (req, res) => {
-  const { replies } = await loadQuickReplies(false);
-  res.json({ success: true, replies });
+  try {
+    const { replies } = await loadQuickReplies(false);
+    res.json({ success: true, replies });
+  } catch (e) {
+    res.json({ success: true, replies: [] });
+  }
 });
 
 app.post("/quick-replies", async (req, res) => {
   const text = (req.body?.text || "").toString().trim();
   if (!text) return res.status(400).json({ success: false, error: "Texto vazio" });
 
-  const cur = await loadQuickReplies(true);
-  const list = Array.isArray(cur.replies) ? cur.replies : [];
+  try {
+    const cur = await loadQuickReplies(true);
+    const list = Array.isArray(cur.replies) ? cur.replies : [];
 
-  if (list.length >= QUICK_REPLIES_LIMIT) {
-    return res.status(400).json({ success: false, error: "Limite de 50 respostas atingido" });
+    if (list.length >= QUICK_REPLIES_LIMIT) {
+      return res.status(400).json({ success: false, error: "Limite de 50 respostas atingido" });
+    }
+
+    const maxId = list.reduce((m, r) => Math.max(m, Number(r.id) || 0), 0);
+    const nextId = maxId + 1;
+
+    list.push({ id: nextId, text: text.slice(0, QUICK_REPLY_TEXT_MAX) });
+    const saved = await saveQuickReplies(list, "Add quick reply");
+
+    res.json({ success: true, replies: saved });
+  } catch (e) {
+    res.status(500).json({ success: false, error: "Falha ao adicionar resposta rápida" });
   }
-
-  const maxId = list.reduce((m, r) => Math.max(m, Number(r.id) || 0), 0);
-  const nextId = maxId + 1;
-
-  list.push({ id: nextId, text: text.slice(0, QUICK_REPLY_TEXT_MAX) });
-  const saved = await saveQuickReplies(list, "Add quick reply");
-
-  res.json({ success: true, replies: saved });
 });
 
 app.put("/quick-replies/:id", async (req, res) => {
@@ -532,33 +594,41 @@ app.put("/quick-replies/:id", async (req, res) => {
   const text = (req.body?.text || "").toString().trim();
   if (!text) return res.status(400).json({ success: false, error: "Texto vazio" });
 
-  const cur = await loadQuickReplies(true);
-  const list = Array.isArray(cur.replies) ? cur.replies : [];
+  try {
+    const cur = await loadQuickReplies(true);
+    const list = Array.isArray(cur.replies) ? cur.replies : [];
 
-  const idx = list.findIndex(r => Number(r.id) === id);
-  if (idx === -1) return res.status(404).json({ success: false, error: "Não encontrado" });
+    const idx = list.findIndex(r => Number(r.id) === id);
+    if (idx === -1) return res.status(404).json({ success: false, error: "Não encontrado" });
 
-  list[idx].text = text.slice(0, QUICK_REPLY_TEXT_MAX);
-  const saved = await saveQuickReplies(list, "Edit quick reply");
+    list[idx].text = text.slice(0, QUICK_REPLY_TEXT_MAX);
+    const saved = await saveQuickReplies(list, "Edit quick reply");
 
-  res.json({ success: true, replies: saved });
+    res.json({ success: true, replies: saved });
+  } catch (e) {
+    res.status(500).json({ success: false, error: "Falha ao editar resposta rápida" });
+  }
 });
 
 app.delete("/quick-replies/:id", async (req, res) => {
   const id = Number(req.params.id);
 
-  const cur = await loadQuickReplies(true);
-  let list = Array.isArray(cur.replies) ? cur.replies : [];
+  try {
+    const cur = await loadQuickReplies(true);
+    let list = Array.isArray(cur.replies) ? cur.replies : [];
 
-  const before = list.length;
-  list = list.filter(r => Number(r.id) !== id);
+    const before = list.length;
+    list = list.filter(r => Number(r.id) !== id);
 
-  if (list.length === before) {
-    return res.status(404).json({ success: false, error: "Não encontrado" });
+    if (list.length === before) {
+      return res.status(404).json({ success: false, error: "Não encontrado" });
+    }
+
+    const saved = await saveQuickReplies(list, "Delete quick reply");
+    res.json({ success: true, replies: saved });
+  } catch (e) {
+    res.status(500).json({ success: false, error: "Falha ao excluir resposta rápida" });
   }
-
-  const saved = await saveQuickReplies(list, "Delete quick reply");
-  res.json({ success: true, replies: saved });
 });
 
 app.listen(3000, () => console.log("Servidor rodando na porta 3000"));
